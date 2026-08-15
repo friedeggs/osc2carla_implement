@@ -1,0 +1,64 @@
+import "domain.osc"
+
+# Head-on collision demo (mirrors scripts/record_scenario_collision.py).
+#
+# Setup (Town10HD_Opt, ClearNoon):
+#   * ego  = Tesla Model 3, spawned at a map spawn point, initially braked.
+#   * npc  = Audi TT, spawned ~25 m ahead of the ego on the same waypoint
+#           lane but rotated 180 degrees so it faces the ego head-on.
+#
+# Behaviour:
+#   * t = 0.0s .. 1.0s : ego holds the brake; npc accelerates at full throttle
+#                        while steering toward the ego.
+#   * t = 1.0s         : ego releases the brake (rolls passively).
+#   * t = 1.0s .. 22s  : npc continues full-throttle pursuit, ramming the ego.
+#                        A collision sensor on the ego logs every contact.
+#
+# Total duration is ~22 s; the recorded video annotates each frame with the
+# running collision count and the most recent impulse magnitude.
+scenario scenario_collision:
+    carla_map: map with:
+        keep(it.map_file == "Town10HD_Opt")
+
+    env: environment
+
+    ego: vehicle with:
+        keep(it.name == "ego")
+        keep(it.model == "vehicle.tesla.model3")
+
+    npc: vehicle with:
+        keep(it.name == "npc")
+        keep(it.model == "vehicle.audi.tt")
+
+    var crash_speed: speed = 60kph
+
+    do parallel:
+        # ---- Environment: bright daylight (ClearNoon) ----
+        env.assign_celestial_position(azimuth: 0deg, elevation: 90deg)
+
+        # ---- EGO timeline ----
+        serial:
+            ego.assign_position() with:
+                lane(0, at: start)
+                speed(0kph, at: start)
+
+            # Hold the brake for the first second, then release and coast.
+            ego.change_speed(target: 0kph, rate_profile: asap)
+            wait elapsed(1s)
+            ego.drive() with:
+                speed(0kph)
+
+        # ---- NPC timeline ----
+        serial:
+            # NPC starts ~25 m in front of the ego, rotated 180 deg to face it.
+            npc.assign_position() with:
+                position(distance: 25m, ahead_of: ego, facing: ego, at: start)
+                speed(0kph, at: start)
+
+            # Full-throttle ram aimed at the ego until the run ends.
+            one_of:
+                npc.ram(target: ego)
+                wait elapsed(21s)
+
+        # ---- Termination guard ----
+        wait elapsed(22s)

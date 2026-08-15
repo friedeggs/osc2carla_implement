@@ -1,0 +1,38 @@
+import "domain.osc"
+
+# Minimal demonstrator for osc2carla: a single Tesla cruises forward for a
+# few seconds, smoothly slows down, then stops.  Uses Town10HD_Opt which
+# ships with the default CARLA 0.9.16 install on this cluster.
+scenario simple_example:
+    carla_map: map with:
+        keep(it.map_file == "Town10HD_Opt")
+
+    hero: vehicle with:
+        keep(it.model == "vehicle.tesla.model3")
+        keep(it.name == "hero")
+
+    var v_cruise: speed = 40kph
+
+    do serial:
+        hero.assign_position() with:
+            lane(0, at: start)
+            speed(0kph, at: start)
+
+        # Phase 1: accelerate to cruise speed for 8 simulated seconds.
+        one_of:
+            hero.drive() with:
+                speed(v_cruise)
+            wait elapsed(8s)
+
+        # Phase 2: smooth deceleration to 10 kph.
+        hero.change_speed(target: 10kph, rate_profile: smooth)
+
+        # Phase 3: hold low speed briefly.
+        one_of:
+            hero.drive() with:
+                speed(10kph)
+            wait elapsed(3s)
+
+        # Phase 4: full stop, then idle 2 s so the video shows the halt.
+        hero.change_speed(target: 0kph, rate_profile: asap)
+        wait elapsed(2s)

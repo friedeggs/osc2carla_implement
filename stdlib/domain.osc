@@ -1,0 +1,48 @@
+# Minimal stub of ASAM OpenSCENARIO 2.1 domain ontology (domain.osc)
+# Provides only the actors/methods/modifiers required by the osc2carla
+# case study.  Replace with the official ASAM domain.osc when distributing
+# alongside an OSC 2.1 license.
+
+import "types.osc"
+
+# --- Core actors ----------------------------------------------------------
+
+actor map:
+    var map_file: string
+
+actor environment
+
+actor traffic_participant:
+    var name: string
+    var model: string
+
+actor vehicle inherits traffic_participant:
+    var color: string
+
+actor stationary_object:
+    var name: string
+    var model: string
+
+# --- Core movement actions for vehicle ------------------------------------
+
+action vehicle.drive
+action vehicle.change_lane
+action vehicle.change_speed
+action vehicle.assign_position
+action vehicle.set_lights
+action vehicle.ram
+
+# --- Stationary object actions --------------------------------------------
+
+action stationary_object.assign_position
+
+# --- Environment actions --------------------------------------------------
+
+action environment.assign_celestial_position
+
+# --- Core modifiers used in the case study --------------------------------
+
+modifier speed
+modifier position
+modifier lane
+modifier acceleration

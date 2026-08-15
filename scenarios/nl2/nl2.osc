@@ -1,0 +1,101 @@
+import "domain.osc"
+
+# Extra scenario, not from the Gamage & Gamage paper. Kept as an example of
+# compiling an NL-template interaction; skip it when replicating paper results.
+#
+# Natural-language scenario (canonical source: nl2_spec.json):
+#
+#   Ego is on the driveway exit and it is 9 m behind the stop line. It wants to turn right onto the road travelling westbound. There is a hero vehicle on the road. It wants to lane follow along the road travelling westbound. When the ego is 2 m behind the stop line and the hero vehicle is 12 m behind the conflict point, the hero vehicle begins to decelerate to a complete stop at 2 m behind the conflict point.
+#
+# Runtime note: stop line / conflict point geometry is junction-specific in the
+# full SMT pipeline (find_driveway.py + Path1D).  Here we approximate placement
+# and the dual trigger with CARLA-relative distances so the osc2carla compiler
+# can execute and record a representative interaction on Town10HD_Opt.
+
+scenario nl2:
+    carla_map: map with:
+        keep(it.map_file == "Town10HD_Opt")
+
+    env: environment
+
+    ego: vehicle with:
+        keep(it.name == "ego")
+        keep(it.model == "vehicle.tesla.model3")
+
+    hero: vehicle with:
+        keep(it.name == "hero")
+        keep(it.model == "vehicle.audi.a2")
+
+    # --- Scenario parameters (names mirror the NL template) ---
+    var initial_ego_distance_behind_stop_line: length = 9m
+    var ego_distance_behind_stop_line: length = 2m
+    var hero_distance_behind_conflict_point: length = 12m
+    var end_hero_distance_behind_conflict_point: length = 2m
+
+    var v_ego_cruise: speed = 12kph
+    var v_hero_cruise: speed = 28kph
+
+    # Hero starts on the main road ahead of the driveway-exit ego; the offset
+    # bundles initial hero placement plus the trigger / stop distances.
+    var hero_road_offset: length = initial_ego_distance_behind_stop_line + hero_distance_behind_conflict_point
+
+    do parallel:
+        env.assign_celestial_position(azimuth: 0deg, elevation: 75deg)
+
+        # ---- Ego: driveway exit -> right turn onto westbound road ----
+        serial:
+            ego.assign_position() with:
+                lane(0, at: start)
+                speed(0kph, at: start)
+
+            wait @go_signal
+
+            # Roll toward the stop line from initial_ego_distance_behind_stop_line.
+            one_of:
+                ego.drive() with:
+                    speed(v_ego_cruise)
+                wait elapsed(4s)
+
+            # Begin right-turn manoeuvre onto the westbound carriageway.
+            ego.change_lane(num_of_lanes: 1, side: right)
+
+            one_of:
+                ego.drive() with:
+                    speed(v_ego_cruise)
+                wait elapsed(18s)
+
+        # ---- Hero: westbound lane follow on the main road ----
+        serial:
+            hero.assign_position() with:
+                position(distance: hero_road_offset, ahead_of: ego, at: start)
+                speed(v_hero_cruise, at: start)
+
+            wait @go_signal
+
+            # Cruise westbound until the dual trigger fires.
+            one_of:
+                hero.drive() with:
+                    speed(v_hero_cruise)
+                wait @HERO_DECEL_TRIGGER
+
+            # Decelerate to a complete stop at end_hero_distance_behind_conflict_point
+            # (approximated as a full stop once triggered).
+            hero.change_speed(target: 0kph, rate_profile: smooth)
+            wait hero.speed < 0.5kph
+            wait elapsed(3s)
+
+        # ---- Trigger monitor: ego stop-line progress AND hero conflict-point progress ----
+        serial:
+            wait @go_signal
+
+            # Proxy for "ego reaches ego_distance_behind_stop_line behind stop line":
+            # ego has started moving and closed the gap toward the junction.
+            wait rise(ego.speed > 2kph)
+
+            # Proxy for "hero is hero_distance_behind_conflict_point behind conflict point":
+            # longitudinal separation between hero and ego matches the trigger distance.
+            wait rise(hero.object_distance(reference: ego, direction: longitudinal) <= hero_distance_behind_conflict_point)
+
+            emit HERO_DECEL_TRIGGER
+
+        wait elapsed(28s)

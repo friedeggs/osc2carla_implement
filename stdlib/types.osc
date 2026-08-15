@@ -1,0 +1,42 @@
+# Minimal stub of ASAM OpenSCENARIO 2.1 std.stdtypes
+# Provides only the physical types, units, and enums required by the
+# osc2carla case study.  Replace with the official ASAM types.osc when
+# distributing alongside an OSC 2.1 license.
+
+# --- Physical types --------------------------------------------------------
+
+type length is SI(m: 1)
+unit m         of length is SI(m: 1, factor: 1.0)
+unit km        of length is SI(m: 1, factor: 1000.0)
+unit cm        of length is SI(m: 1, factor: 0.01)
+unit mm        of length is SI(m: 1, factor: 0.001)
+unit mi        of length is SI(m: 1, factor: 1609.344)
+unit ft        of length is SI(m: 1, factor: 0.3048)
+
+type time is SI(s: 1)
+unit s         of time is SI(s: 1, factor: 1.0)
+unit ms        of time is SI(s: 1, factor: 0.001)
+unit min       of time is SI(s: 1, factor: 60.0)
+unit h         of time is SI(s: 1, factor: 3600.0)
+
+type speed is SI(m: 1, s: -1)
+unit mps       of speed is SI(m: 1, s: -1, factor: 1.0)
+unit kph       of speed is SI(m: 1, s: -1, factor: 0.27777778)
+unit mph       of speed is SI(m: 1, s: -1, factor: 0.44704)
+
+type acceleration is SI(m: 1, s: -2)
+unit mpsps     of acceleration is SI(m: 1, s: -2, factor: 1.0)
+
+type angle is SI(rad: 1)
+unit rad       of angle is SI(rad: 1, factor: 1.0)
+unit deg       of angle is SI(rad: 1, factor: 0.017453293)
+
+type mass is SI(kg: 1)
+unit kg        of mass is SI(kg: 1, factor: 1.0)
+
+# --- Enums used by the case study -----------------------------------------
+
+enum side: [left, right]
+enum rate_profile: [linear, smooth, asap]
+enum direction: [forward, backward, euclidean]
+enum lights_mode: [auto, off, low_beam, high_beam, fog, brake]

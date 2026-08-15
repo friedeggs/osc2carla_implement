@@ -1,0 +1,106 @@
+import "domain.osc"
+
+# Closed-loop demonstration: lead-vehicle brake check (Town10HD_Opt).
+#
+# Actors:
+#   * hero = Tesla Model 3 (ego, camera vehicle), spawned at a map spawn
+#     point that has enough road ahead for the npc placement.
+#   * npc  = green Audi TT, spawned 35 m AHEAD of the hero on the same
+#     lane (relative topological placement resolved by the
+#     ScenarioInitializer at spawn time).
+#
+# Timeline (all closed-loop mechanisms of the compiler are exercised):
+#   Phase 1  npc cruises slowly (15 kph, PID); hero closes in fast
+#            (35 kph, PID waypoint following).  A rise(...) edge detector
+#            continuously re-evaluates the euclidean gap each tick and
+#            fires when it drops below close_gap.
+#   Phase 2  hero matches the npc speed (car following at 15 kph).
+#   Phase 3  after 12 s the npc emits NPC_BRAKING and performs an
+#            emergency stop; the hero reacts to the blackboard event
+#            (cross-actor handshake) and brakes to a halt as well.
+#   Guard    wait elapsed(22s) bounds the recording.
+scenario closed_loop_demo:
+    carla_map: map with:
+        keep(it.map_file == "Town10HD_Opt")
+
+    env: environment
+
+    hero: vehicle with:
+        keep(it.name == "hero")
+        keep(it.model == "vehicle.tesla.model3")
+
+    npc: vehicle with:
+        keep(it.name == "npc")
+        keep(it.model == "vehicle.audi.tt")
+        keep(it.color == "0,128,0")
+
+    # Variables are resolved by the ExecutionContext; mixed units are
+    # converted to SI (m/s) via the stdlib unit table before execution.
+    var v_npc_slow: speed = 15kph
+    var v_hero_fast: speed = v_npc_slow + 15kph
+    var spawn_gap: length = 35m
+    var close_gap: length = 20m
+
+    do parallel:
+        # ---- Environment: bright daylight ----
+        env.assign_celestial_position(azimuth: 0deg, elevation: 90deg)
+
+        # ---- NPC (lead vehicle) timeline ----
+        serial:
+            npc.assign_position() with:
+                position(distance: spawn_gap, ahead_of: hero, at: start)
+                speed(0kph, at: start)
+            wait @go_signal
+
+            # Cruise slowly for 12 s, then brake-check.
+            one_of:
+                npc.drive() with:
+                    speed(v_npc_slow)
+                wait elapsed(12s)
+
+            emit NPC_BRAKING
+            npc.change_speed(target: 0kph, rate_profile: asap)
+            wait npc.speed < 0.3kph
+            emit NPC_STOPPED
+
+            # Hold at standstill.  NOTE: this is required because the
+            # baseline's ChangeTargetSpeed(asap) can latch throttle=1.0 as
+            # the final applied control on the tick where speed == 0 (err
+            # >= 0 branch); CARLA persists the last VehicleControl, so
+            # without an active 0-speed controller the car creeps forward.
+            one_of:
+                npc.drive() with:
+                    speed(0kph)
+                wait elapsed(10s)
+
+        # ---- HERO (follower) timeline ----
+        serial:
+            hero.assign_position() with:
+                speed(0kph, at: start)
+            wait @go_signal
+
+            # Phase 1: catch up.  The wait condition re-queries the live
+            # euclidean distance between the two actors on every tick.
+            one_of:
+                hero.drive() with:
+                    speed(v_hero_fast)
+                wait rise(hero.object_distance(reference: npc, direction: euclidean) < close_gap)
+
+            # Phase 2: match the lead vehicle's speed until it brakes.
+            one_of:
+                hero.drive() with:
+                    speed(v_npc_slow)
+                wait @NPC_BRAKING
+
+            # Phase 3: react to the brake check.
+            hero.change_speed(target: 0kph, rate_profile: asap)
+            wait hero.speed < 0.3kph
+
+            # Hold at standstill (see note on the npc timeline).
+            one_of:
+                hero.drive() with:
+                    speed(0kph)
+                wait elapsed(9s)
+
+        # ---- Termination guard ----
+        wait elapsed(22s)

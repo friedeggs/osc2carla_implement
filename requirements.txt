@@ -1,0 +1,14 @@
+# Compile / dry-run (no CARLA). Pin antlr4 to 4.7.x — the checked-in
+# frontend/generated/* files were produced with ANTLR 4.7.1.
+antlr4-python3-runtime>=4.7.1,<4.8
+py-trees==0.8.3
+numpy>=1.19,<1.25
+
+# Recording overlays (--record-video). On this cluster, cv2 comes from
+# `module load opencv/4.5.5` instead of this package.
+opencv-python>=4.5,<4.9
+
+# Live runs also need the CARLA 0.9.16 Python API, e.g.
+#   pip install dist/carla-0.9.16-cp38-cp38-linux_x86_64.whl
+# or PYTHONPATH pointing at $CARLA_ROOT/PythonAPI/carla
+# (cp38 wheel → Python 3.8).

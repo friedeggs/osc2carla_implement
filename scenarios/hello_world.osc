@@ -1,0 +1,130 @@
+import "domain.osc"
+
+scenario hello_world:
+    # --- DEFINITIONS ---
+    carla_map: map with:
+        keep(it.map_file == "Town06")
+
+    env: environment
+
+    hero: vehicle with:
+        keep(it.model == "vehicle.tesla.model3")
+        keep(it.name == "hero")
+
+    npc: vehicle with:
+        keep(it.model == "vehicle.carlamotors.european_hgv")
+        keep(it.name == "npc")
+        keep(it.color == "0,128,0")
+
+    obstacle: stationary_object with:
+        keep(it.name == "obstacle")
+        keep(it.model == "static.prop.trafficwarning")
+
+    # --- GLOBAL VARIABLES ---
+    var v_hero: speed = 35kph
+    var v_npc_fast: speed = v_hero + 12.42mph
+    var v_npc_slow: speed = v_hero - 10kph
+    var v_npc_catchup: speed = v_hero * 10kph
+
+    var lag: length = 5m
+    var gap: length = lag * 3
+    var safety_gap: length = gap - 3m
+
+    do serial:
+        # --- TWILIGHT SETTINGS ---
+        env.assign_celestial_position(azimuth: 270deg, elevation: 12deg)
+        hero.set_lights(mode: "auto")
+
+        hero.assign_position() with:
+            lane(1, at: start)
+            speed(0kph, at: start)
+
+        npc.assign_position() with:
+            lane(side: right, side_of: hero, at: start)
+            position(distance: lag, behind: hero, at: start)
+            speed(0kph, at: start)
+
+        obstacle.assign_position() with:
+            position(x: 478.93, y: -14.07, z: 0.00, h: -1.57rad, at: start)
+
+        parallel:
+            # =========================
+            # --- HERO LOGIC ---
+            # =========================
+            serial:
+                wait @go_signal
+
+                # --- Phase 1: Cruise ---
+                one_of:
+                    hero.drive() with:
+                        speed(v_hero)
+                    wait fall(npc.position.ahead_of(hero) > safety_gap)
+
+                # --- Phase 2: Hazard Detected - Flash High Beams & Swerve ---
+                parallel:
+                    # Task A: The evasive physical maneuver
+                    serial:
+                        hero.change_lane(num_of_lanes: 1, side: right)
+                        emit CRASH_AVOIDED
+
+                    # Task B: The visual "Flash" effect
+                    serial:
+                        hero.set_lights(mode: "high_beam")
+                        wait elapsed(0.5s)
+                        hero.set_lights(mode: "auto")
+
+                # --- Phase 3: Approach & Synchronize ---
+                one_of:
+                    hero.drive() with:
+                        speed(v_hero)
+                    wait @OBSTACLE_DETECTED
+
+                # --- Phase 4: Approach NPC smoothly and pull alongside ---
+                serial:
+                    hero.change_speed(target: 25kph, rate_profile: smooth)
+                    one_of:
+                        hero.drive() with:
+                            speed(25kph)
+                        serial:
+                            wait rise(hero.position.ahead_of(npc) >= -1m)
+
+                # --- Phase 5: Final Stop ---
+                hero.change_speed(target: 0kph, rate_profile: asap)
+                wait hero.speed < 0.1kph
+                wait elapsed(5s)
+
+            # =========================
+            # --- NPC LOGIC ---
+            # =========================
+            serial:
+                wait @go_signal
+
+                # --- Phase 1: Accelerate UNTIL ahead of Hero ---
+                one_of:
+                    npc.drive() with:
+                        speed(v_npc_fast)
+                    serial:
+                        wait rise(npc.position.ahead_of(hero) >= lag * 2)
+
+                # --- Phase 2: Cut In ---
+                npc.change_lane(num_of_lanes: 1, side: left)
+
+                # --- Phase 3: Brake Check UNTIL Ego swerves ---
+                one_of:
+                    npc.drive() with:
+                        speed(v_npc_slow)
+                    wait @CRASH_AVOIDED
+
+                # --- Phase 4: Recover & Approach Obstacle ---
+                one_of:
+                    npc.drive() with:
+                        speed(v_npc_catchup, rate_profile: smooth)
+                    serial:
+                        wait rise(npc.object_distance(reference: obstacle, direction: euclidean) < 45m)
+
+                # --- Phase 5: Emergency Stop & Emit Event ---
+                npc.change_speed(target: 0kph, rate_profile: asap)
+                emit OBSTACLE_DETECTED
+
+                # Phase 6: Parked
+                wait elapsed(100s)
