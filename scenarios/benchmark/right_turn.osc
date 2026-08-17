@@ -1,0 +1,239 @@
+import "domain.osc"
+
+# Right turn out of a side road, rear-ended by traffic already on the lane the
+# ego turns onto (Town10HD_Opt, junction 841).
+#
+# Natural-language scenario:
+#
+#   The ego turns right out of the minor arm of an intersection onto a busier
+#   road, against background traffic in both directions.  It is still slow from
+#   the corner when it settles into its new lane.  A vehicle already travelling
+#   on that lane arrives from behind and, instead of braking for the car that
+#   has just pulled out in front of it, runs into the back of it.
+#
+# Stage geometry (junction 841, centre ~(41.9, 23.7)):
+#
+#                                 |  x = 44 minor arm, ego runs -y
+#                                 v
+#   rear_ender --->  y = 28.2 eastbound  [ J841 ]  ---> ego merges in at x ~ 55
+#   ==========================================================================
+#   adjacent_a/b --> y = 24.6 eastbound
+#   ------------------------------- median -----------------------------------
+#                    y = 16.9 westbound  <--- opposing
+#
+#   * ego comes down the north arm with ~9 m of approach, then a 20 m right-turn
+#     arc that lands it on the y = 28.3 lane heading +x.
+#   * merge point = (55.00, 28.35), where the arc joins that lane.
+#   * rear_ender approaches on that SAME lane with 75 m of clean straight road
+#     behind it -- it is already on the destination lane, coming up from lower
+#     x, i.e. from directly behind the ego's merge.
+#   * the turn arc never drops below y = 28.3, so it crosses neither the inner
+#     eastbound lane (y = 24.6) nor the westbound carriageway (y = 16.9); the
+#     background traffic there cannot interfere with the result.
+#
+# Actors (4 vehicles + 1 reference marker):
+#   ego         Tesla Model 3 (camera vehicle), turning right out of the arm.
+#   rear_ender  Nissan Patrol on the destination lane; does not brake.
+#   adjacent_a  Audi A2 on the inner eastbound lane, straight through.
+#   adjacent_b  Mercedes coupe, 20 m behind adjacent_a.
+#   opposing    Citroen C3 on the westbound carriageway.
+#
+# Timeline:
+#   t = 0        all four vehicles spawn at rest, launch on @go_signal.
+#   t ~ 0-2      ego pulls out of the arm; rear_ender builds speed on its
+#                75 m approach.
+#   t ~ 2-5.5    ego works around the turn arc at v_turn, brake lights on.
+#   t ~ 5.5      ego settles into the y = 28.3 lane, still slow; the monitor
+#                emits EGO_MERGED.  rear_ender is ~23 m back and closing.
+#   t ~ 8.4      rear_ender, which never braked, runs squarely into the back of
+#                the ego (impulse ~18600).  The ego-mounted collision sensor
+#                overlays every contact.
+#   t ~ 8.4-24   the Patrol pushes the wreck on up the road.
+#   t = 24       termination guard.
+#
+# Observed on CARLA 0.9.16 (Town10HD_Opt): ~295 collision events, first contact
+# at t = 8.35 s.  Exact counts shift with CARLA build and physics substepping.
+#
+# Junction choice: junction 841 is used because the ego's right turn and
+# rear_ender's straight-through movement land on the same lane, and because
+# rear_ender's approach is a clean straight run. drive() re-projects the actor
+# onto a waypoint every tick, so a vehicle asked to follow a long connecting
+# road THROUGH a large junction box can be captured by an overlapping
+# connecting road and steered off course; keeping rear_ender on an ordinary
+# straight lane avoids that. See also the note in left_turn.osc about turns
+# being a property of the approach lane rather than anything the scenario can
+# request.
+#
+# Modelling note: ram(target: ego) is what makes the rear-end deterministic.
+# This baseline has no car-following or braking driver model -- drive() is a
+# waypoint+PID controller that neither sees other vehicles nor yields -- so
+# "the driver behind failed to brake" is expressed as the switch from lane
+# following to ram once the ego is established in the lane ahead.  The impact
+# geometry (in-lane, from directly behind) is what makes it a rear-end rather
+# than the side impact in red_light.osc.
+scenario right_turn:
+    carla_map: map with:
+        keep(it.map_file == "Town10HD_Opt")
+
+    env: environment
+
+    # Declared first: adjacent_b is placed relative to adjacent_a, and keeping
+    # the camera vehicle first matches the other benchmark scenarios.
+    ego: vehicle with:
+        keep(it.name == "ego")
+        keep(it.model == "vehicle.tesla.model3")
+
+    rear_ender: vehicle with:
+        keep(it.name == "rear_ender")
+        keep(it.model == "vehicle.nissan.patrol")
+        keep(it.color == "80,80,80")
+
+    # --- Background traffic ---
+    adjacent_a: vehicle with:
+        keep(it.name == "adjacent_a")
+        keep(it.model == "vehicle.audi.a2")
+        keep(it.color == "20,20,20")
+
+    adjacent_b: vehicle with:
+        keep(it.name == "adjacent_b")
+        keep(it.model == "vehicle.mercedes.coupe")
+        keep(it.color == "200,200,200")
+
+    opposing: vehicle with:
+        keep(it.name == "opposing")
+        keep(it.model == "vehicle.citroen.c3")
+        keep(it.color == "0,90,160")
+
+    # Marks where the turn arc joins the destination lane.  Same trick as
+    # red_light.osc: static.prop.dirtdebris01 is the one ground decal that
+    # registers no collision events, so it cannot pollute the ego's overlay,
+    # and z is set below grade to cancel the initializer's 0.5 m spawn lift.
+    merge_point: stationary_object with:
+        keep(it.name == "merge_point")
+        keep(it.model == "static.prop.dirtdebris01")
+
+    # --- Speeds ---
+    # Pull-out speed off the minor arm; there is only ~9 m before the corner.
+    var v_ego: speed = 22kph
+    # Cornering speed. The controller has no lateral limit, so the slow-down
+    # has to be commanded explicitly -- and it is what leaves the ego slow
+    # enough for rear_ender to run into.
+    var v_turn: speed = 16kph
+    # Speed the ego pulls away at once it is straight again. A car that has
+    # just come round a corner is still slow.
+    var v_exit: speed = 20kph
+    var v_rear: speed = 30kph
+    var v_adjacent: speed = 28kph
+    var v_opposing: speed = 25kph
+
+    # --- Distances ---
+    var adjacent_gap: length = 20m
+    # The ego commits to the corner this far from the merge point.
+    var corner_radius: length = 18m
+    # ...and counts as established in the destination lane inside this one.
+    var merge_radius: length = 8m
+
+    do parallel:
+        env.assign_celestial_position(azimuth: 0deg, elevation: 65deg)
+
+        merge_point.assign_position() with:
+            position(x: 55.00, y: 28.35, z: -0.40, at: start)
+
+        # ---- EGO: right turn out of the minor arm ----
+        serial:
+            ego.assign_position() with:
+                position(x: 44.01, y: 50.50, z: 0.00, h: -1.5839rad, at: start)
+                speed(0kph, at: start)
+
+            wait @go_signal
+
+            one_of:
+                ego.drive() with:
+                    speed(v_ego)
+                wait rise(ego.object_distance(reference: merge_point, direction: euclidean) < corner_radius)
+
+            emit EGO_AT_CORNER
+            ego.set_lights(mode: brake)
+
+            # Take the corner at v_turn. drive() follows next()[0], which for
+            # this arm is the right-turn connection onto the y = 28.3 lane.
+            one_of:
+                ego.drive() with:
+                    speed(v_turn)
+                wait @EGO_MERGED
+
+            # Straighten up and pull away -- or would, if rear_ender were not
+            # already closing on it.
+            one_of:
+                ego.drive() with:
+                    speed(v_exit)
+                wait elapsed(15s)
+
+        # ---- REAR_ENDER: already on the destination lane, does not brake ----
+        serial:
+            rear_ender.assign_position() with:
+                position(x: -20.00, y: 28.12, z: 0.00, h: 0.0028rad, at: start)
+                speed(0kph, at: start)
+
+            wait @go_signal
+
+            one_of:
+                rear_ender.drive() with:
+                    speed(v_rear)
+                wait @EGO_MERGED
+
+            # The ego is now in the lane ahead. No brake application.
+            emit REAR_ENDER_COMMITTED
+            one_of:
+                rear_ender.ram(target: ego)
+                wait elapsed(15s)
+
+        # ---- Background: inner eastbound lane, straight through ----
+        serial:
+            # x = 0, not further west: the inner eastbound lane only runs clean
+            # back to x = -26.8 before it enters junction 189's box, and
+            # adjacent_b is placed 20 m behind this point.
+            adjacent_a.assign_position() with:
+                position(x: 0.00, y: 24.69, z: 0.00, h: 0.0028rad, at: start)
+                speed(0kph, at: start)
+
+            wait @go_signal
+
+            one_of:
+                adjacent_a.drive() with:
+                    speed(v_adjacent)
+                wait elapsed(23s)
+
+        serial:
+            adjacent_b.assign_position() with:
+                position(distance: adjacent_gap, behind: adjacent_a, at: start)
+                speed(0kph, at: start)
+
+            wait @go_signal
+
+            one_of:
+                adjacent_b.drive() with:
+                    speed(v_adjacent)
+                wait elapsed(23s)
+
+        # ---- Background: opposing carriageway ----
+        serial:
+            opposing.assign_position() with:
+                position(x: 78.00, y: 16.90, z: 0.00, h: 3.1444rad, at: start)
+                speed(0kph, at: start)
+
+            wait @go_signal
+
+            one_of:
+                opposing.drive() with:
+                    speed(v_opposing)
+                wait elapsed(23s)
+
+        # ---- Monitor: has the ego established itself in the new lane? ----
+        serial:
+            wait @go_signal
+            wait rise(ego.object_distance(reference: merge_point, direction: euclidean) < merge_radius)
+            emit EGO_MERGED
+
+        # ---- Termination guard ----
+        wait elapsed(24s)

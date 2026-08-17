@@ -1,0 +1,221 @@
+import "domain.osc"
+
+# Unprotected left turn across oncoming traffic (Town10HD_Opt, junction 134).
+#
+# Natural-language scenario:
+#
+#   The ego makes an unprotected left turn at an intersection with background
+#   traffic in both directions.  A car ahead of it completes the same turn in a
+#   gap.  The ego follows through on a gap that has already closed, and an
+#   oncoming vehicle -- travelling the opposite direction of the ego's original
+#   lane -- hits it while it is turning across.
+#
+# Stage geometry (junction 134, centre ~(42.6, 65.1)):
+#
+#      ego, lead_turner, follower --->  y = 69.7 eastbound
+#      ============================[ JUNCTION 134 ]============================
+#      oncoming, oncoming_b     <---  y = 66.3 westbound  (opposite direction
+#                                     of the ego's original lane)
+#                                  |
+#                                  v  ego's left-turn arc exits on x = 44
+#
+#   * ego approaches eastbound on y = 69.7 with 40 m of straight run-up.  That
+#     lane's continuation through the junction is the left turn onto the x = 44
+#     lane, so the arc sweeps across the westbound carriageway.
+#   * conflict point = (38.80, 66.40): where the ego's turn arc crosses the
+#     oncoming lane.  This is the classic unprotected-left conflict -- the ego
+#     has to cross a lane it does not have priority on.
+#
+# Actors (4 vehicles + 1 reference marker):
+#   ego         Tesla Model 3 (camera vehicle), turning left.
+#   oncoming    Dodge Charger travelling the opposite direction on y = 66.3;
+#               has priority and does not yield.
+#   oncoming_b  Seat Leon, 12 m behind it in the same lane.
+#   lead_turner Audi A2, 22 m ahead of the ego; takes the same left turn while
+#               the gap is still open and clears before oncoming arrives.  It
+#               is what makes the ego's turn read as a misjudged gap rather
+#               than an impossible one.
+#   follower    Mercedes coupe, 14 m behind the ego, queued to turn.
+#
+# Timeline:
+#   t = 0        all four vehicles spawn at rest, launch on @go_signal.
+#   t ~ 0-4      ego cruises eastbound; lead_turner turns left ahead of it and
+#                clears the conflict point while the gap is still open.
+#   t ~ 5.5      ego reaches the junction mouth and commits to the turn; the
+#                monitor emits EGO_TURNING.  oncoming is ~9 m short of the
+#                conflict point.
+#   t ~ 6.7      oncoming, which has priority, does not yield -- it holds its
+#                line into the ego as the ego sweeps across its lane.  Impact
+#                is front-quarter, on a car visibly mid-arc, inside the
+#                junction (impulse ~20200).
+#   t ~ 6.7-20   wreck settles; follower and oncoming_b arrive behind.
+#   t = 20       termination guard.
+#
+# Observed on CARLA 0.9.16 (Town10HD_Opt): ~287 collision events, first contact
+# at t = 6.70 s.  Exact counts shift with CARLA build and physics substepping.
+#
+# Junction note: junction 134 is unsignalised, and it is the only junction in
+# Town10HD_Opt whose approach topology gives drive() a left turn AND has a true
+# opposing approach on the same road -- the two things this scenario needs.
+# This baseline has no turn action: drive() follows next()[0], so which way the
+# ego goes through a junction is a property of the lane it is on, not of
+# anything the scenario can request (README, "Coverage vs. the paper").  The
+# turn is therefore selected by choosing the approach lane.  "Unprotected" here
+# means what it always means -- the turn crosses a lane the ego does not have
+# priority on -- and does not depend on a signal phase.
+scenario left_turn:
+    carla_map: map with:
+        keep(it.map_file == "Town10HD_Opt")
+
+    env: environment
+
+    # Declared first: lead_turner and follower are placed topologically
+    # relative to the ego, and the initializer resolves relative placement
+    # against the spawn transform of an already-spawned binding.
+    ego: vehicle with:
+        keep(it.name == "ego")
+        keep(it.model == "vehicle.tesla.model3")
+
+    lead_turner: vehicle with:
+        keep(it.name == "lead_turner")
+        keep(it.model == "vehicle.audi.a2")
+        keep(it.color == "20,20,20")
+
+    follower: vehicle with:
+        keep(it.name == "follower")
+        keep(it.model == "vehicle.mercedes.coupe")
+        keep(it.color == "200,200,200")
+
+    # --- Oncoming carriageway ---
+    oncoming: vehicle with:
+        keep(it.name == "oncoming")
+        keep(it.model == "vehicle.dodge.charger_2020")
+        keep(it.color == "160,20,20")
+
+    oncoming_b: vehicle with:
+        keep(it.name == "oncoming_b")
+        keep(it.model == "vehicle.seat.leon")
+        keep(it.color == "0,90,160")
+
+    # Where the ego's turn arc crosses the oncoming lane.  As in red_light.osc,
+    # static.prop.dirtdebris01 is used because it registers no collision
+    # events; z cancels the initializer's 0.5 m spawn lift.
+    conflict_point: stationary_object with:
+        keep(it.name == "conflict_point")
+        keep(it.model == "static.prop.dirtdebris01")
+
+    # --- Speeds ---
+    var v_ego: speed = 30kph
+    # Cornering speed: the controller has no lateral limit, so the turn
+    # slow-down is commanded explicitly.
+    var v_turn: speed = 18kph
+    var v_lead: speed = 30kph
+    var v_follower: speed = 26kph
+    # Tuned so oncoming is still ~9 m short of the conflict point when the ego
+    # commits, rather than already past it. Faster than this and it reaches the
+    # crossing first, then homes BACK onto an ego that has not started turning
+    # yet -- which lands as a head-on at the junction mouth instead of a strike
+    # on a car mid-arc.
+    var v_oncoming: speed = 19kph
+
+    # --- Distances ---
+    var lead_gap: length = 22m
+    var follow_gap: length = 14m
+    var oncoming_gap: length = 12m
+
+    # The ego commits to the turn this far from the conflict point (the arc
+    # starts at the junction mouth, ~14 m short of the oncoming lane).
+    var commit_radius: length = 14m
+
+    do parallel:
+        env.assign_celestial_position(azimuth: 0deg, elevation: 65deg)
+
+        conflict_point.assign_position() with:
+            position(x: 38.80, y: 66.40, z: -0.40, at: start)
+
+        # ---- EGO: unprotected left across the oncoming carriageway ----
+        serial:
+            ego.assign_position() with:
+                position(x: -10.00, y: 69.74, z: 0.00, h: 0.0012rad, at: start)
+                speed(0kph, at: start)
+
+            wait @go_signal
+
+            one_of:
+                ego.drive() with:
+                    speed(v_ego)
+                wait @EGO_TURNING
+
+            # Committed. drive() follows next()[0], which for this lane is the
+            # left-turn connection across the westbound carriageway.
+            one_of:
+                ego.drive() with:
+                    speed(v_turn)
+                wait elapsed(15s)
+
+        # ---- LEAD_TURNER: same turn, taken while the gap is still open ----
+        serial:
+            lead_turner.assign_position() with:
+                position(distance: lead_gap, ahead_of: ego, at: start)
+                speed(0kph, at: start)
+
+            wait @go_signal
+
+            one_of:
+                lead_turner.drive() with:
+                    speed(v_lead)
+                wait elapsed(19s)
+
+        # ---- FOLLOWER: queued behind the ego to make the same turn ----
+        serial:
+            follower.assign_position() with:
+                position(distance: follow_gap, behind: ego, at: start)
+                speed(0kph, at: start)
+
+            wait @go_signal
+
+            one_of:
+                follower.drive() with:
+                    speed(v_follower)
+                wait elapsed(19s)
+
+        # ---- ONCOMING: has priority, does not yield ----
+        serial:
+            oncoming.assign_position() with:
+                position(x: 70.00, y: 66.34, z: 0.00, h: -3.1405rad, at: start)
+                speed(0kph, at: start)
+
+            wait @go_signal
+
+            # Runs its own lane until the ego starts crossing it.
+            one_of:
+                oncoming.drive() with:
+                    speed(v_oncoming)
+                wait @EGO_TURNING
+
+            # Holds its line into the turning ego rather than yielding.
+            emit ONCOMING_HELD_LINE
+            one_of:
+                oncoming.ram(target: ego)
+                wait elapsed(13s)
+
+        serial:
+            oncoming_b.assign_position() with:
+                position(distance: oncoming_gap, behind: oncoming, at: start)
+                speed(0kph, at: start)
+
+            wait @go_signal
+
+            one_of:
+                oncoming_b.drive() with:
+                    speed(v_oncoming)
+                wait elapsed(19s)
+
+        # ---- Monitor: has the ego committed to crossing the oncoming lane? ----
+        serial:
+            wait @go_signal
+            wait rise(ego.object_distance(reference: conflict_point, direction: euclidean) < commit_radius)
+            emit EGO_TURNING
+
+        # ---- Termination guard ----
+        wait elapsed(20s)
