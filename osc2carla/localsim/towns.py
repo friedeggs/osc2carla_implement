@@ -22,7 +22,7 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Sequence, Tuple
 
 from .geometry import normalise_angle
-from .roadmap import Lane, Map, classify_turn
+from .roadmap import Junction, Lane, Map, classify_turn
 
 #: sampled points per junction connector
 CONNECTOR_SAMPLES = 14
@@ -163,7 +163,12 @@ class GridTown:
                                   ("j", xi, yi), ("j", xi, yi + 1))
 
         self._connect_junctions()
-        return Map(self.name, self._lanes, turn_preference=turn_preference)
+        junctions = [
+            Junction(len(ys) * xi + yi, (x, y), (h, h))
+            for xi, x in enumerate(xs) for yi, y in enumerate(ys)
+        ]
+        return Map(self.name, self._lanes, turn_preference=turn_preference,
+                   junctions=junctions)
 
     def _connect_junctions(self) -> None:
         """Add one connector lane per legal in-lane/out-lane pair."""
@@ -245,20 +250,25 @@ BUILTIN_TOWNS: Dict[str, GridTown] = {
         name="grid",
         xs=(0.0, 80.0, 160.0), ys=(0.0, 80.0, 160.0),
         lanes_per_dir=2,
-        description="3x3 junctions, 80 m spacing, two lanes each way.",
+        description="3x3 junctions, 80 m spacing, two lanes each way. "
+                    "One four-way junction, at (80, 80).",
     ),
     "loop": GridTown(
         name="loop",
         xs=(0.0, 240.0), ys=(0.0, 140.0),
         lanes_per_dir=2,
         description="Single rectangular circuit with long straights; "
-                    "car-following demos never run out of road.",
+                    "car-following demos never run out of road. No four-way "
+                    "junction -- every corner is a two-arm turn.",
     ),
     "wide_grid": GridTown(
         name="wide_grid",
         xs=(-80.0, 0.0, 80.0, 160.0), ys=(-80.0, 0.0, 80.0, 160.0),
         lanes_per_dir=2,
-        description="4x4 junctions covering x,y in [-80, 160].",
+        description="4x4 junctions covering x,y in [-80, 160]. Four four-way "
+                    "junctions -- (0,0), (0,80), (80,0), (80,80) -- each with "
+                    "66 m of straight approach on every arm. The one to stage "
+                    "junction conflicts in.",
     ),
 }
 

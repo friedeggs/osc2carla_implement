@@ -206,39 +206,8 @@ class BevRenderer:
             return ((px - self._bg_origin[0]) * self._scale,
                     (py - self._bg_origin[1]) * self._scale)
 
-        lanes = list(self.map.lanes.values())
-        # Junction boxes first, as filled areas: drawing each connector as a
-        # thick polyline instead leaves a scalloped edge where the arcs fan out.
-        for rect in _junction_boxes(lanes):
-            x0, y0 = to_bg(rect[0], rect[1])
-            x1, y1 = to_bg(rect[2], rect[3])
-            pygame.draw.rect(surf, JUNCTION,
-                             pygame.Rect(int(x0), int(y0),
-                                         max(1, int(x1 - x0)), max(1, int(y1 - y0))))
-        for lane in lanes:
-            if lane.is_junction:
-                continue
-            pts = [to_bg(x, y) for x, y in lane.points]
-            _thick_polyline(surf, pts, ROAD, lane.width * self._scale)
-        for lane in lanes:
-            if not lane.is_junction:
-                self._lane_markings(surf, lane, to_bg)
+        draw_network(surf, self.map, to_bg, self._scale)
         self._background = surf
-
-    def _lane_markings(self, surf, lane, to_bg) -> None:
-        half = lane.width * 0.5
-        inner = _offset_polyline(lane.points, -half)
-        outer = _offset_polyline(lane.points, +half)
-        if lane.left is None:
-            # innermost lane of a carriageway: the road's centre line
-            _line(surf, [to_bg(*p) for p in inner], CENTRE_LINE,
-                  max(1, int(0.16 * self._scale)))
-        if lane.right is None:
-            _line(surf, [to_bg(*p) for p in outer], EDGE_LINE,
-                  max(1, int(0.14 * self._scale)))
-        else:
-            _dashed(surf, [to_bg(*p) for p in outer], DASH,
-                    max(1, int(0.12 * self._scale)), self._scale)
 
     # -- the frame --------------------------------------------------------
 
@@ -451,6 +420,58 @@ class BevRenderer:
 # --------------------------------------------------------------------------
 # drawing helpers
 # --------------------------------------------------------------------------
+
+def draw_network(surf, road_map, to_screen, scale: float) -> None:
+    """Paint asphalt and lane markings for a whole road map.
+
+    ``to_screen`` maps world metres to surface pixels.  Shared with
+    :mod:`.mapview` so the reference sheets and the live view cannot drift
+    apart.
+    """
+    lanes = [l for l in road_map.lanes.values() if not l.is_junction]
+    for lane in lanes:
+        _thick_polyline(surf, [to_screen(x, y) for x, y in lane.points],
+                        ROAD, lane.width * scale)
+    # Junction areas are filled boxes drawn *over* the segments. Drawing each
+    # connector arc as a thick polyline instead leaves a scalloped edge, and
+    # painting the boxes underneath would leave the round joins the segment
+    # ends contribute poking into them.
+    for rect in junction_boxes(road_map):
+        x0, y0 = to_screen(rect[0], rect[1])
+        x1, y1 = to_screen(rect[2], rect[3])
+        pygame.draw.rect(surf, JUNCTION,
+                         pygame.Rect(int(x0), int(y0),
+                                     max(1, int(x1 - x0)), max(1, int(y1 - y0))))
+    # Markings last, and only on the segments: they stop at the box edge, so
+    # a junction reads as the unmarked area it is.
+    for lane in lanes:
+        _lane_markings(surf, lane, to_screen, scale)
+
+
+def _lane_markings(surf, lane, to_screen, scale: float) -> None:
+    half = lane.width * 0.5
+    if lane.left is None:
+        # innermost lane of a carriageway: the road's centre line
+        _line(surf, [to_screen(*p) for p in _offset_polyline(lane.points, -half)],
+              CENTRE_LINE, max(1, int(0.16 * scale)))
+    outer = [to_screen(*p) for p in _offset_polyline(lane.points, +half)]
+    if lane.right is None:
+        _line(surf, outer, EDGE_LINE, max(1, int(0.14 * scale)))
+    else:
+        _dashed(surf, outer, DASH, max(1, int(0.12 * scale)), scale)
+
+
+def junction_boxes(road_map) -> List[Tuple[float, float, float, float]]:
+    """``(min_x, min_y, max_x, max_y)`` per junction.
+
+    Uses the map's declared junctions when it has them, and falls back to the
+    hull of the connector arcs for a map that does not.
+    """
+    declared = getattr(road_map, "junctions", None)
+    if declared:
+        return [j.bounding_box for j in declared]
+    return _junction_boxes(list(road_map.lanes.values()))
+
 
 def _junction_boxes(lanes) -> List[Tuple[float, float, float, float]]:
     """One ``(min_x, min_y, max_x, max_y)`` per junction, from its connectors."""

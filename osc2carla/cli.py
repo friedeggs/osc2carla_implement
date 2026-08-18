@@ -194,6 +194,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         print("\nCARLA map names accepted as aliases:")
         for carla_name, local in sorted(TOWN_ALIASES.items()):
             print(f"  {carla_name:<14} -> {local}")
+        print("\nCoordinate reference sheets (PNG + Markdown) for authoring "
+              "scenarios:\n  python -m osc2carla.localsim.mapview")
         return 0
 
     if not args.scenario:

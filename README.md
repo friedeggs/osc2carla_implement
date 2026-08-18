@@ -162,10 +162,45 @@ bites — no CARLA town geometry. `localsim/towns.py` synthesises grid networks:
 
 ```
 $ python -m osc2carla --list-towns
-grid        3x3 junctions, 80 m spacing, two lanes each way.
-loop        Single rectangular circuit with long straights.
-wide_grid   4x4 junctions covering x,y in [-80, 160].
+grid        3x3 junctions, 80 m spacing. One four-way junction, at (80, 80).
+loop        Single rectangular circuit. No four-way junction.
+wide_grid   4x4 junctions over x,y in [-80, 160]. Four four-way junctions --
+            (0,0), (0,80), (80,0), (80,80) -- with 66 m approaches on every arm.
 ```
+
+### Map reference sheets
+
+Authoring a scenario against a CARLA town means opening the map in the
+simulator and reading coordinates off it. The local towns are synthesised, so
+there is nothing to open — `mapview` is the substitute:
+
+```bash
+python -m osc2carla.localsim.mapview --spawn-points
+```
+
+It writes `maps/<town>.png` and `maps/<town>.md` (both checked in). The PNG
+draws the network to scale over a 20 m grid and labels every junction centre
+with the arms it actually has; the Markdown lists the same figures as tables
+you can paste from — one row per carriageway giving its fixed coordinate,
+direction, lane id, heading in radians, and the range of straight road it
+covers:
+
+| runs along | fixed coord | direction | lane | `h` (rad) | travel range |
+|---|---|---|---|---|---|
+| x | y = 81.75 | east (+x) | -1 | +0.0000 | x in [7, 153] |
+| y | x = 78.25 | south (+y) | -1 | +1.5708 | y in [7, 153] |
+
+Two things the sheets make obvious, both of which constrain where a scenario
+can be staged:
+
+- **Not every junction is four-way.** The grid's edges and corners have two
+  or three arms; the `arms` column says which. A conflict that needs an
+  opposing approach — an unprotected left, a red-light T-bone — has to sit at
+  an `NESW` junction.
+- **`h` grows clockwise**, because +y is south. Southbound is `h: 1.5708rad`,
+  northbound `h: -1.5708rad`, westbound `h: 3.1416rad`. Getting the sign
+  wrong spawns a car facing into oncoming traffic, and `drive()` will
+  cheerfully follow the lane it snaps to.
 
 CARLA map names are aliased onto these (`Town10HD_Opt` → `grid`) so an
 unmodified `.osc` file loads and reports the substitution. The consequence:

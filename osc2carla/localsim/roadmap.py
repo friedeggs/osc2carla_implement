@@ -117,6 +117,34 @@ class Lane:
                 f"len={self.length:.1f}{', junction' if self.is_junction else ''})")
 
 
+class Junction:
+    """A declared intersection area, in the spirit of ``carla.Junction``.
+
+    The connector arcs alone do not describe it: at a corner of the grid only
+    two arms exist, so the arcs cover a fraction of the box and the centre
+    inferred from them is off by half a carriageway.  Town builders therefore
+    state the junction rather than leaving it to be guessed.
+    """
+
+    __slots__ = ("id", "centre", "extent")
+
+    def __init__(self, junction_id: int, centre: Tuple[float, float],
+                 extent: Tuple[float, float]):
+        self.id = junction_id
+        self.centre = (float(centre[0]), float(centre[1]))
+        self.extent = (float(extent[0]), float(extent[1]))
+
+    @property
+    def bounding_box(self) -> Tuple[float, float, float, float]:
+        """``(min_x, min_y, max_x, max_y)``."""
+        cx, cy = self.centre
+        ex, ey = self.extent
+        return (cx - ex, cy - ey, cx + ex, cy + ey)
+
+    def __repr__(self) -> str:
+        return f"Junction(id={self.id}, centre={self.centre})"
+
+
 class Waypoint:
     """A pose on a lane. Same read-only surface as ``carla.Waypoint``."""
 
@@ -231,8 +259,10 @@ class Map:
     def __init__(self, name: str, lanes: Sequence[Lane],
                  spawn_points: Optional[Sequence[Transform]] = None,
                  turn_preference: str = "straight",
+                 junctions: Optional[Sequence[Junction]] = None,
                  index_cell: float = 8.0, index_step: float = 1.0):
         self.name = name
+        self.junctions: List[Junction] = list(junctions or [])
         self.lanes: Dict[int, Lane] = {lane.uid: lane for lane in lanes}
         self.turn_preference = turn_preference
         self._cell = float(index_cell)
@@ -331,6 +361,9 @@ class Map:
                 out.append(Waypoint(self, lane, s))
                 s += max(distance, 0.5)
         return out
+
+    def get_junctions(self) -> List[Junction]:
+        return list(self.junctions)
 
     def get_topology(self) -> List[Tuple[Waypoint, Waypoint]]:
         out = []
