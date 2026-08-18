@@ -78,6 +78,15 @@ class GridTown:
     ys: Sequence[float]
     lanes_per_dir: int = 2
     lane_width: float = 3.5
+    #: Clear area beyond the bare crossing of the two carriageways.
+    #:
+    #: Without it a junction box is exactly as wide as the roads, which puts
+    #: the outermost lane 1.75 m from the box edge and makes a right-turn
+    #: connector a ~1.75 m arc -- tighter than the bicycle model's ~4.5 m
+    #: minimum turning radius. The controller then cuts the corner into the
+    #: neighbouring lane instead of tracking the connector. Real intersections
+    #: have the same clear area, for the same reason.
+    junction_margin: float = 4.0
     description: str = ""
 
     #: filled in during build()
@@ -89,8 +98,13 @@ class GridTown:
         field(default_factory=dict, repr=False)
 
     @property
-    def half_road(self) -> float:
+    def carriageway_half_width(self) -> float:
         return self.lanes_per_dir * self.lane_width
+
+    @property
+    def half_road(self) -> float:
+        """Half-size of a junction box: the carriageway plus its clear area."""
+        return self.carriageway_half_width + self.junction_margin
 
     # -- building blocks --------------------------------------------------
 

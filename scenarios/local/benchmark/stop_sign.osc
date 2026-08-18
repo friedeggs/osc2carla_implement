@@ -1,0 +1,254 @@
+import "domain.osc"
+
+# All-way stop negotiation at an unsignalised intersection -- LOCAL SIMULATOR
+# port of scenarios/benchmark/stop_sign.osc.
+#
+#   python -m osc2carla scenarios/local/benchmark/stop_sign.osc \
+#       --backend pygame --town grid --junction-turn straight --sim-duration 26
+#
+# Same natural-language scenario as the CARLA original:
+#
+#   The ego reaches an unsignalised intersection that it shares with three
+#   other vehicles.  It has to work out whose turn it is: who arrived first,
+#   and who has right of way.  It stops at the line, yields to the vehicle
+#   that got there before it -- which is also the vehicle on its right -- and
+#   only then crosses.
+#
+#   Unlike the other benchmark scenarios, this one is meant to end with NO
+#   collision.  The pass condition is that the negotiation works.
+#
+# Stage geometry -- centre junction of the `grid` town, centre (80, 80), box
+# x in [69, 91], y in [69, 91]:
+#
+#   ego, queued --->  y = 81.75 eastbound   [ (80, 80) ]  ---> ego continues
+#   =========================================================================
+#   opposing    <---  y = 78.25 westbound
+#                                    ^
+#                                    |  x = 81.75 northbound (-y), from the
+#                                 crosser   south arm -- the ego's RIGHT
+#
+#   * every approach's stop line is the same distance from the junction
+#     centre, so one arrival_radius serves all of them and one clear_radius
+#     serves as "out the far side".  The CARLA original could only get within
+#     ~2 m of that; a synthesised grid is exactly symmetric.
+#   * the ego's right hand points +y, so the crosser coming up the south arm
+#     approaches from the ego's right, as in the original.
+#
+# Right-of-way encoded here, unchanged from the original:
+#   1. First to arrive at the line goes first    -> ego waits @CROSSER_CLEARED
+#   2. Yield to the vehicle on your right        -> same vehicle, same wait
+#   3. Non-conflicting movements may go together -> opposing does not wait for
+#                                                   the ego, nor the ego for it
+#   4. Queue order is preserved                  -> queued waits @EGO_CLEARED
+#
+# Differences from the CARLA original:
+#   * the crosser goes STRAIGHT across the ego's path rather than turning
+#     right into the ego's lane.  drive() follows next()[0] and the local
+#     backend's --junction-turn is a whole-map preference, so one scenario
+#     cannot ask one actor to turn while the others go straight unless their
+#     lane assignments differ -- and a right turn is only connected between
+#     outermost lanes, which would leave the crosser merging into the lane
+#     beside the ego's rather than into it.  A straight crossing is still a
+#     conflicting movement with the same precedence, so all four rules above
+#     are exercised; what is lost is the merge geometry.
+#   * junction 841 in the original is a T. This is a four-way, so `opposing`
+#     has a real fourth approach instead of sharing the ego's road.
+#
+# Expected on the local backend: collision_occurred = false. Every vehicle
+# comes to a full standstill at its own line and takes its turn in order.
+# That zero is the pass condition.
+scenario stop_sign:
+    carla_map: map with:
+        keep(it.map_file == "grid")
+
+    env: environment
+
+    # Declared first: queued is placed topologically relative to the ego.
+    ego: vehicle with:
+        keep(it.name == "ego")
+        keep(it.model == "vehicle.tesla.model3")
+
+    queued: vehicle with:
+        keep(it.name == "queued")
+        keep(it.model == "vehicle.mercedes.coupe")
+        keep(it.color == "200,200,200")
+
+    crosser: vehicle with:
+        keep(it.name == "crosser")
+        keep(it.model == "vehicle.nissan.patrol")
+        keep(it.color == "80,80,80")
+
+    opposing: vehicle with:
+        keep(it.name == "opposing")
+        keep(it.model == "vehicle.citroen.c3")
+        keep(it.color == "0,90,160")
+
+    # Single shared reference for every approach's stop line and clearance
+    # test, at the junction centre. A prop this flat is a ground decal in the
+    # local simulator -- it reports contact but never deflects a car -- so it
+    # can sit where two driving lines cross, and the metrics discount
+    # non-vehicle contacts in any case. z cancels the 0.5 m spawn lift.
+    junction_centre: stationary_object with:
+        keep(it.name == "junction_centre")
+        keep(it.model == "static.prop.dirtdebris01")
+
+    # --- Speeds (approach speeds for a stop-controlled junction) ---
+    var v_ego: speed = 25kph
+    var v_crosser: speed = 20kph
+    var v_opposing: speed = 25kph
+    var v_queued: speed = 22kph
+
+    # --- Distances ---
+    var queue_gap: length = 13m
+    # "At my stop line", measured from the junction centre. The box reaches
+    # 11 m from the centre, so this stops a vehicle ~4 m short of the mouth.
+    var arrival_radius: length = 15m
+    # "Out the far side of the junction."
+    var clear_radius: length = 17m
+    # Headway at which a queued vehicle stops behind the car in front.
+    var headway: length = 9m
+
+    do parallel:
+        env.assign_celestial_position(azimuth: 0deg, elevation: 65deg)
+
+        junction_centre.assign_position() with:
+            position(x: 80.00, y: 80.00, z: -0.40, at: start)
+
+        # ---- EGO: arrives third, yields to the crosser, then crosses ----
+        serial:
+            ego.assign_position() with:
+                position(x: 26.00, y: 81.75, z: 0.00, h: 0.0rad, at: start)
+                speed(0kph, at: start)
+
+            wait @go_signal
+
+            one_of:
+                ego.drive() with:
+                    speed(v_ego)
+                wait rise(ego.object_distance(reference: junction_centre, direction: euclidean) < arrival_radius)
+
+            emit EGO_ARRIVED
+            ego.set_lights(mode: brake)
+            ego.change_speed(target: 0kph, rate_profile: asap)
+            wait ego.speed < 0.3kph
+
+            # Hold at the line. The crosser arrived first AND is on the ego's
+            # right -- both rules point the same way, so the ego waits for it
+            # to clear.  An active 0-speed controller is required or the last
+            # applied VehicleControl latches and the car creeps forward (see
+            # closed_loop_demo).
+            one_of:
+                ego.drive() with:
+                    speed(0kph)
+                wait @CROSSER_CLEARED
+
+            one_of:
+                ego.drive() with:
+                    speed(v_ego)
+                wait elapsed(17s)
+
+        # ---- CROSSER: arrives first, crosses the ego's path ----
+        serial:
+            crosser.assign_position() with:
+                position(x: 81.75, y: 115.00, z: 0.00, h: -1.5708rad, at: start)
+                speed(0kph, at: start)
+
+            wait @go_signal
+
+            one_of:
+                crosser.drive() with:
+                    speed(v_crosser)
+                wait rise(crosser.object_distance(reference: junction_centre, direction: euclidean) < arrival_radius)
+
+            emit CROSSER_ARRIVED
+            crosser.set_lights(mode: brake)
+            crosser.change_speed(target: 0kph, rate_profile: asap)
+            wait crosser.speed < 0.3kph
+
+            # Full stop, then go: nothing arrived before it.
+            one_of:
+                crosser.drive() with:
+                    speed(0kph)
+                wait elapsed(2.5s)
+
+            one_of:
+                crosser.drive() with:
+                    speed(v_crosser)
+                wait elapsed(19s)
+
+        # ---- OPPOSING: arrives second; movement does not cross the ego's ----
+        serial:
+            opposing.assign_position() with:
+                position(x: 125.00, y: 78.25, z: 0.00, h: 3.1416rad, at: start)
+                speed(0kph, at: start)
+
+            wait @go_signal
+
+            one_of:
+                opposing.drive() with:
+                    speed(v_opposing)
+                wait rise(opposing.object_distance(reference: junction_centre, direction: euclidean) < arrival_radius)
+
+            emit OPPOSING_ARRIVED
+            opposing.set_lights(mode: brake)
+            opposing.change_speed(target: 0kph, rate_profile: asap)
+            wait opposing.speed < 0.3kph
+
+            # Waits out the crosser -- which arrived first and whose path
+            # sweeps the junction -- then goes, without waiting for the ego.
+            one_of:
+                opposing.drive() with:
+                    speed(0kph)
+                wait @CROSSER_CLEARED
+
+            one_of:
+                opposing.drive() with:
+                    speed(v_opposing)
+                wait elapsed(17s)
+
+        # ---- QUEUED: arrives last, holds queue order behind the ego ----
+        serial:
+            queued.assign_position() with:
+                position(distance: queue_gap, behind: ego, at: start)
+                speed(0kph, at: start)
+
+            wait @go_signal
+
+            one_of:
+                queued.drive() with:
+                    speed(v_queued)
+                wait rise(queued.object_distance(reference: ego, direction: euclidean) < headway)
+
+            queued.set_lights(mode: brake)
+            queued.change_speed(target: 0kph, rate_profile: asap)
+            wait queued.speed < 0.3kph
+
+            one_of:
+                queued.drive() with:
+                    speed(0kph)
+                wait @EGO_CLEARED
+
+            one_of:
+                queued.drive() with:
+                    speed(v_queued)
+                wait elapsed(15s)
+
+        # ---- Monitor: crosser has left the junction on the far side ----
+        # Two-stage rise: "inside the box", then "outside again". A single
+        # 'distance > clear_radius' test would fire on the first tick, while
+        # the crosser is still on its approach.
+        serial:
+            wait @CROSSER_ARRIVED
+            wait rise(crosser.object_distance(reference: junction_centre, direction: euclidean) < clear_radius)
+            wait rise(crosser.object_distance(reference: junction_centre, direction: euclidean) > clear_radius)
+            emit CROSSER_CLEARED
+
+        # ---- Monitor: ego has left the junction on the far side ----
+        serial:
+            wait @EGO_ARRIVED
+            wait rise(ego.object_distance(reference: junction_centre, direction: euclidean) < clear_radius)
+            wait rise(ego.object_distance(reference: junction_centre, direction: euclidean) > clear_radius)
+            emit EGO_CLEARED
+
+        # ---- Termination guard ----
+        wait elapsed(26s)

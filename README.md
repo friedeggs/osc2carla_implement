@@ -43,6 +43,7 @@ osc2carla_implement/
 | `scenarios/hello_world.osc` | Paper case study (Listings 2–3) | **dry-run only** here (needs Town06 + `lane()` placement, neither of which this baseline implements) |
 | `scenarios/nl2/nl2.osc` | Extra NL-template experiment, **not from the paper** | optional |
 | `scenarios/local/local_crossing.osc` | Junction failure-to-yield, written against the local backend's `grid` town | **no** — `--backend pygame` |
+| `scenarios/local/benchmark/*.osc` | The four benchmark scenarios ported to the local `grid` town | **no** — `--backend pygame` |
 
 `--dry-run` on `hello_world.osc` is the compile-only check against the paper’s behaviour tree. Running it live would need Town06 and lane-based spawn, which this baseline does not implement (see “Coverage vs. the paper” below).
 
@@ -221,6 +222,47 @@ One more difference worth knowing: this baseline's `drive()` follows
 property of the map, not of anything the scenario can request. CARLA's order
 comes from the OpenDRIVE file; here it is explicit, and `--junction-turn
 {straight,left,right}` selects it.
+
+### The benchmark scenarios, ported
+
+`scenarios/local/benchmark/` stages the same four natural-language scenarios
+as `scenarios/benchmark/`, at the centre junction **(80, 80)** of the `grid`
+town instead of at Town10HD_Opt junctions 189 / 841 / 134:
+
+```bash
+./experiments/run_experiments_local.sh            # both policy arms, all four
+python experiments/make_report.py experiments/results_local     -c experiments/benchmark_local.json
+```
+
+| Scenario | `--junction-turn` | Intent | Observed (scripted arm) |
+|---|---|---|---|
+| `red_light` | `straight` | violator T-bones the ego inside the junction | collision at t = 6.95 s, partner `violator` |
+| `right_turn` | `right` | ego rear-ended after turning right | collision at t = 13.80 s, partner `rear_ender` |
+| `left_turn` | `left` | oncoming car strikes the ego mid-turn | collision at t = 9.00 s, partner `oncoming` |
+| `stop_sign` | `straight` | precedence negotiated, nothing is hit | **no collision** — the pass condition |
+
+These are **ports, not the same runs**. The geometry is synthesised, so the
+absolute numbers are not comparable with `benchmark.json`; the intended
+*outcome* per scenario is, and that is what `expect_collision` encodes. Each
+file's header states its own deviations.
+
+**How one scenario mixes manoeuvres.** `drive()` follows `next()[0]`, and
+`--junction-turn` is a whole-map preference, so at first sight every actor in
+a run must take the same exit. The town's lane-pairing rule supplies the
+difference: a **left** turn is connected only from the innermost lane, and a
+**right** turn only between outermost lanes — as on a real road. A vehicle on
+the other lane has no such connector and falls through to going straight. So
+in `left_turn`, the ego and the two cars queued with it sit on the inner
+eastbound lane and turn; `oncoming_b` sits on the outer westbound lane and
+does not. Where even that is not enough, the striking vehicle switches to
+`ram(target: ego)` before it reaches the junction, which is what the CARLA
+originals already do.
+
+One artefact worth knowing: `right_turn`'s corner is the tightest manoeuvre
+the town offers, and the pure-pursuit controller comes out of it carrying
+about 2 m of lateral error — more than half a lane — so the ego finishes one
+lane inboard of the connector's nominal exit. It still turns right and is
+still rear-ended in-lane from directly behind; the note is in the file.
 
 ### Keys and flags
 

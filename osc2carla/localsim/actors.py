@@ -31,8 +31,12 @@ class VehiclePhysics:
                  "drag", "rolling", "lateral_damping", "spin_damping")
 
     def __init__(self, mass: float, half_length: float):
-        # heavy vehicles accelerate and stop less sharply
-        scale = min(1.0, 1600.0 / max(mass, 200.0))
+        # Heavy vehicles accelerate and stop less sharply, but not in
+        # proportion to their mass: a loaded truck makes perhaps 1.5 m/s^2,
+        # not an eighth of a car's. Scaling linearly gave a 12 t HGV
+        # 0.48 m/s^2, slow enough that traffic behind it rear-ended it before
+        # it had cleared its own spawn point.
+        scale = max(0.45, min(1.0, math.sqrt(1600.0 / max(mass, 200.0))))
         self.max_accel = 3.6 * scale          # m/s^2 at throttle = 1
         self.max_decel = 8.5 * min(1.0, scale + 0.35)   # m/s^2 at brake = 1
         self.max_steer = math.radians(38.0)
@@ -65,6 +69,8 @@ class Actor:
         self._vy = 0.0
         self._spin = 0.0
         self.mass = 0.0
+        #: decals report contact but never exchange momentum
+        self.is_decal = False
         self.bounding_box = BoundingBox(extent=Vector3D(0.5, 0.5, 0.5))
 
     # -- CARLA read surface ----------------------------------------------
@@ -210,8 +216,20 @@ class Vehicle(Actor):
         self._z = max(0.0, self._z - 4.0 * dt)
 
 
+#: props flatter than this are treated as ground decals
+DECAL_HEIGHT = 0.10
+
+
 class StaticProp(Actor):
-    """A ground marker or obstacle. Solid, but never moves."""
+    """A ground marker or obstacle. Solid, but never moves.
+
+    A prop flatter than :data:`DECAL_HEIGHT` is a *decal*: the scenarios use
+    ``static.prop.dirtdebris01`` as a distance reference painted on the road,
+    and in CARLA driving over one raises a collision event without moving the
+    car.  Reproducing only the first half of that -- an immovable box that
+    deflects whatever touches it -- would silently wreck any scenario whose
+    reference marker sits on a driving line.
+    """
 
     is_solid = True
     immovable = True
@@ -222,6 +240,7 @@ class StaticProp(Actor):
         hl, hw, hh = prop_spec(type_id)
         self.bounding_box = BoundingBox(extent=Vector3D(hl, hw, hh))
         self.mass = 0.0
+        self.is_decal = hh < DECAL_HEIGHT
         self.color = (150, 120, 70)
 
 

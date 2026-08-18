@@ -81,8 +81,8 @@ straight_town = load_town("grid", turn_preference="straight")
 left_town = load_town("grid", turn_preference="left")
 # Approach junction (80, 80) eastbound: it is the one with all four arms,
 # so a left exit (north, toward -y) actually exists there.
-approach = straight_town.get_waypoint(Location(70.0, 81.75, 0.0))
-approach_l = left_town.get_waypoint(Location(70.0, 81.75, 0.0))
+approach = straight_town.get_waypoint(Location(60.0, 81.75, 0.0))
+approach_l = left_town.get_waypoint(Location(60.0, 81.75, 0.0))
 
 
 def heading_after(start, distance=26.0):

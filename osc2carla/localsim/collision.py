@@ -125,6 +125,13 @@ def resolve(contact: Contact) -> float:
     if inv_sum <= 0.0:
         return 0.0
 
+    if getattr(a, "is_decal", False) or getattr(b, "is_decal", False):
+        # A ground decal is reported and then driven over, as in CARLA. The
+        # impulse is still computed so the event carries a sensible figure,
+        # but no momentum or position is exchanged.
+        rel = ((b._vx - a._vx) * nx) + ((b._vy - a._vy) * ny)
+        return abs((1.0 + RESTITUTION) * rel / inv_sum) if rel < 0.0 else 0.0
+
     # positional correction so the boxes stop interpenetrating
     push = contact.depth * SEPARATION / inv_sum
     a._x -= nx * push * inv_a

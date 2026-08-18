@@ -4,7 +4,7 @@
 
 - extent: x in [-85.3, 165.3], y in [-85.3, 165.3]
 - lanes: 240 (including junction connectors)
-- spawn points: 384
+- spawn points: 288
 - lane width: 3.5 m, 2 lanes each way
 
 Coordinates are CARLA's: +x east, +y **south**, `h` in radians growing clockwise when the map is drawn with +y down. A left turn goes toward -y.
@@ -38,38 +38,38 @@ A vehicle placed on one of these, with the matching `h`, drives along it.
 
 | runs along | fixed coord | direction | lane | `h` (rad) | travel range |
 |---|---|---|---|---|---|
-| x | y = -85.25 | west (-x) | +2 | +3.1416 | x in [-73, 153] |
-| x | y = -81.75 | west (-x) | +1 | +3.1416 | x in [-73, 153] |
-| x | y = -78.25 | east (+x) | -1 | +0.0000 | x in [-73, 153] |
-| x | y = -74.75 | east (+x) | -2 | +0.0000 | x in [-73, 153] |
-| x | y = -5.25 | west (-x) | +2 | +3.1416 | x in [-73, 153] |
-| x | y = -1.75 | west (-x) | +1 | +3.1416 | x in [-73, 153] |
-| x | y = 1.75 | east (+x) | -1 | +0.0000 | x in [-73, 153] |
-| x | y = 5.25 | east (+x) | -2 | +0.0000 | x in [-73, 153] |
-| x | y = 74.75 | west (-x) | +2 | +3.1416 | x in [-73, 153] |
-| x | y = 78.25 | west (-x) | +1 | +3.1416 | x in [-73, 153] |
-| x | y = 81.75 | east (+x) | -1 | +0.0000 | x in [-73, 153] |
-| x | y = 85.25 | east (+x) | -2 | +0.0000 | x in [-73, 153] |
-| x | y = 154.75 | west (-x) | +2 | +3.1416 | x in [-73, 153] |
-| x | y = 158.25 | west (-x) | +1 | +3.1416 | x in [-73, 153] |
-| x | y = 161.75 | east (+x) | -1 | +0.0000 | x in [-73, 153] |
-| x | y = 165.25 | east (+x) | -2 | +0.0000 | x in [-73, 153] |
-| y | x = -85.25 | south (+y) | -2 | +1.5708 | y in [-73, 153] |
-| y | x = -81.75 | south (+y) | -1 | +1.5708 | y in [-73, 153] |
-| y | x = -78.25 | north (-y) | +1 | -1.5708 | y in [-73, 153] |
-| y | x = -74.75 | north (-y) | +2 | -1.5708 | y in [-73, 153] |
-| y | x = -5.25 | south (+y) | -2 | +1.5708 | y in [-73, 153] |
-| y | x = -1.75 | south (+y) | -1 | +1.5708 | y in [-73, 153] |
-| y | x = 1.75 | north (-y) | +1 | -1.5708 | y in [-73, 153] |
-| y | x = 5.25 | north (-y) | +2 | -1.5708 | y in [-73, 153] |
-| y | x = 74.75 | south (+y) | -2 | +1.5708 | y in [-73, 153] |
-| y | x = 78.25 | south (+y) | -1 | +1.5708 | y in [-73, 153] |
-| y | x = 81.75 | north (-y) | +1 | -1.5708 | y in [-73, 153] |
-| y | x = 85.25 | north (-y) | +2 | -1.5708 | y in [-73, 153] |
-| y | x = 154.75 | south (+y) | -2 | +1.5708 | y in [-73, 153] |
-| y | x = 158.25 | south (+y) | -1 | +1.5708 | y in [-73, 153] |
-| y | x = 161.75 | north (-y) | +1 | -1.5708 | y in [-73, 153] |
-| y | x = 165.25 | north (-y) | +2 | -1.5708 | y in [-73, 153] |
+| x | y = -85.25 | west (-x) | +2 | +3.1416 | x in [-69, 149] |
+| x | y = -81.75 | west (-x) | +1 | +3.1416 | x in [-69, 149] |
+| x | y = -78.25 | east (+x) | -1 | +0.0000 | x in [-69, 149] |
+| x | y = -74.75 | east (+x) | -2 | +0.0000 | x in [-69, 149] |
+| x | y = -5.25 | west (-x) | +2 | +3.1416 | x in [-69, 149] |
+| x | y = -1.75 | west (-x) | +1 | +3.1416 | x in [-69, 149] |
+| x | y = 1.75 | east (+x) | -1 | +0.0000 | x in [-69, 149] |
+| x | y = 5.25 | east (+x) | -2 | +0.0000 | x in [-69, 149] |
+| x | y = 74.75 | west (-x) | +2 | +3.1416 | x in [-69, 149] |
+| x | y = 78.25 | west (-x) | +1 | +3.1416 | x in [-69, 149] |
+| x | y = 81.75 | east (+x) | -1 | +0.0000 | x in [-69, 149] |
+| x | y = 85.25 | east (+x) | -2 | +0.0000 | x in [-69, 149] |
+| x | y = 154.75 | west (-x) | +2 | +3.1416 | x in [-69, 149] |
+| x | y = 158.25 | west (-x) | +1 | +3.1416 | x in [-69, 149] |
+| x | y = 161.75 | east (+x) | -1 | +0.0000 | x in [-69, 149] |
+| x | y = 165.25 | east (+x) | -2 | +0.0000 | x in [-69, 149] |
+| y | x = -85.25 | south (+y) | -2 | +1.5708 | y in [-69, 149] |
+| y | x = -81.75 | south (+y) | -1 | +1.5708 | y in [-69, 149] |
+| y | x = -78.25 | north (-y) | +1 | -1.5708 | y in [-69, 149] |
+| y | x = -74.75 | north (-y) | +2 | -1.5708 | y in [-69, 149] |
+| y | x = -5.25 | south (+y) | -2 | +1.5708 | y in [-69, 149] |
+| y | x = -1.75 | south (+y) | -1 | +1.5708 | y in [-69, 149] |
+| y | x = 1.75 | north (-y) | +1 | -1.5708 | y in [-69, 149] |
+| y | x = 5.25 | north (-y) | +2 | -1.5708 | y in [-69, 149] |
+| y | x = 74.75 | south (+y) | -2 | +1.5708 | y in [-69, 149] |
+| y | x = 78.25 | south (+y) | -1 | +1.5708 | y in [-69, 149] |
+| y | x = 81.75 | north (-y) | +1 | -1.5708 | y in [-69, 149] |
+| y | x = 85.25 | north (-y) | +2 | -1.5708 | y in [-69, 149] |
+| y | x = 154.75 | south (+y) | -2 | +1.5708 | y in [-69, 149] |
+| y | x = 158.25 | south (+y) | -1 | +1.5708 | y in [-69, 149] |
+| y | x = 161.75 | north (-y) | +1 | -1.5708 | y in [-69, 149] |
+| y | x = 165.25 | north (-y) | +2 | -1.5708 | y in [-69, 149] |
 
 `lane -1` is the lane nearest the road's centre line and `lane -2` the one outside it, following CARLA's sign convention; the positive ids are the opposing carriageway.
 

@@ -133,6 +133,8 @@ class World:
         for other in self._actors:
             if not other.is_alive or not other.is_solid:
                 continue
+            if getattr(other, "is_decal", False):
+                continue          # you can park on a painted marker
             if abs(other._z - candidate._z) > (other.bounding_box.extent.z + ext.z):
                 continue
             if _collision.obb_overlap(cand, _collision.actor_corners(other)):

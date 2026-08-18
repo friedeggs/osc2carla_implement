@@ -65,13 +65,13 @@ scenario local_crossing:
     var v_crosser: speed = 30kph
     var follow_gap: length = 16m
     # How close the ego gets to the marker before the crosser pulls out.
-    var approach_radius: length = 43m
+    var approach_radius: length = 47m
 
     do parallel:
         env.assign_celestial_position(azimuth: 0deg, elevation: 70deg)
 
         marker.assign_position() with:
-            position(x: 88.00, y: 88.00, z: -0.40, at: start)
+            position(x: 94.00, y: 94.00, z: -0.40, at: start)
 
         # ---- EGO: straight through the junction ----
         serial:
