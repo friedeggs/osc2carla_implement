@@ -231,8 +231,49 @@ town instead of at Town10HD_Opt junctions 189 / 841 / 134:
 
 ```bash
 ./experiments/run_experiments_local.sh            # both policy arms, all four
-python experiments/make_report.py experiments/results_local     -c experiments/benchmark_local.json
+python experiments/make_report.py experiments/results_local -c experiments/benchmark_local.json
 ```
+
+### Statistics: sweeping the IDM parameter space
+
+The local backend is **deterministic** — fixed step, no physics substepping, no
+server, stable spawn digest — so unlike the CARLA benchmark, repeating a run
+reproduces it bit for bit and `REPEATS>1` carries no information. The
+distribution that does exist is over the *policy*:
+
+```bash
+python experiments/sweep_idm_local.py -n 64 --seed 20260818 --jobs 12 --check-determinism
+python experiments/make_report.py experiments/results_local_sweep -c experiments/benchmark_local.json -o experiments/report_local/index.html
+```
+
+[sweep_idm_local.py](experiments/sweep_idm_local.py) draws a Latin hypercube
+over the six IDM parameters (`v0`, `T`, `a_max`, `b`, `s0`, `delta`) and runs
+all four scenarios at each sample — 260 runs in about a minute on 12 cores.
+`--check-determinism` asserts the bit-identical-repeat property before the
+sweep starts. The scripted arm has no parameters and stays a single
+deterministic run per scenario: a reference point, not a distribution.
+
+Intended-conflict rate over 64 samples, with 95% Wilson intervals:
+
+| Scenario | scripted | IDM | Most influential parameter |
+|---|---|---|---|
+| `red_light` | 1/1 | **16%** (10/64) [9–27] | `a_max`, `v0` (both +31 pts) |
+| `right_turn` | 1/1 | **12%** (8/64) [6–23] | `v0` (−25 pts) |
+| `left_turn` | 1/1 | **56%** (36/64) [44–68] | `a_max` (+56 pts) |
+| `stop_sign` | 1/1 | **70%** (45/64) [58–80] | `a_max` (+28 pts) |
+
+`a_max` dominating three of four is not a statement about IDM's safety — it is
+the signature of a **choreographed** benchmark. Each scenario was tuned so the
+*scripted* ego meets the scripted antagonist on schedule; an ego that
+accelerates differently arrives at a different time and meets something else.
+In `red_light` all 64 IDM samples are rear-ended by their own scripted
+follower, because `drive()` has no braking model and any ego slower than the
+scripted one gets run into.
+
+`stop_sign` is the one clean read, because its pass condition is the *absence*
+of a collision and so does not depend on meeting anyone on schedule. IDM fails
+it in 19 of 64 samples: the model has no term for a crossing conflict, so
+whether it yields to the crosser is incidental.
 
 | Scenario | `--junction-turn` | Intent | Observed (scripted arm) |
 |---|---|---|---|

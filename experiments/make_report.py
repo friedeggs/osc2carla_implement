@@ -18,6 +18,7 @@ from __future__ import annotations
 import argparse
 import glob
 import json
+import math
 import os
 import statistics
 from collections import Counter
@@ -105,6 +106,158 @@ def evaluate(cfg, runs) -> List[dict]:
                 "partners": partner_counts,
             })
     return rows
+
+
+# --------------------------------------------------------------------------
+# Statistics over a sampled parameter space
+# --------------------------------------------------------------------------
+
+def wilson(k: int, n: int, z: float = 1.96) -> Tuple[float, float]:
+    """95% Wilson score interval for a binomial rate.
+
+    Preferred over the normal approximation because these rates sit near 0 and
+    1, where the normal interval runs outside [0, 1] and understates the
+    uncertainty of a unanimous cell.
+    """
+    if n == 0:
+        return (0.0, 1.0)
+    phat = k / n
+    denom = 1.0 + z * z / n
+    centre = (phat + z * z / (2 * n)) / denom
+    half = z * math.sqrt(phat * (1 - phat) / n + z * z / (4 * n * n)) / denom
+    return (max(0.0, centre - half), min(1.0, centre + half))
+
+
+def _intended(record: dict, expect: bool, partner: Optional[str]) -> bool:
+    occurred = bool(record.get("collision_occurred"))
+    if occurred != expect:
+        return False
+    if not expect:
+        return True
+    return partner in (record.get("collision_partner_roles") or [])
+
+
+def parameter_sensitivity(cfg, runs) -> List[dict]:
+    """Which policy parameters move the outcome, by median split.
+
+    For every scenario and every sampled parameter, the runs are split at that
+    parameter's median and the intended-outcome rate compared across the two
+    halves. A median split rather than a fitted model: with a few dozen samples
+    over six parameters, a difference of proportions is the strongest claim the
+    data supports, and it needs no assumption about the shape of the response.
+    """
+    out: List[dict] = []
+    for sc in cfg["scenarios"]:
+        expect = bool(sc["expect_collision"])
+        partner = sc.get("intended_partner")
+        cell = [r for r in runs.get((sc["name"], "idm"), []) if r.get("policy_params")]
+        if len(cell) < 8:
+            continue
+        names = sorted({k for r in cell for k in r["policy_params"]})
+        rows = []
+        for name in names:
+            pairs = [(float(r["policy_params"][name]),
+                      _intended(r, expect, partner)) for r in cell
+                     if name in r["policy_params"]]
+            if len(pairs) < 8:
+                continue
+            cut = statistics.median(v for v, _ in pairs)
+            lo = [ok for v, ok in pairs if v <= cut]
+            hi = [ok for v, ok in pairs if v > cut]
+            if not lo or not hi:
+                continue
+            r_lo, r_hi = sum(lo) / len(lo), sum(hi) / len(hi)
+            rows.append({
+                "param": name, "cut": cut,
+                "n_lo": len(lo), "rate_lo": r_lo, "ci_lo": wilson(sum(lo), len(lo)),
+                "n_hi": len(hi), "rate_hi": r_hi, "ci_hi": wilson(sum(hi), len(hi)),
+                "delta": r_hi - r_lo,
+                "values": [(v, ok) for v, ok in pairs],
+            })
+        rows.sort(key=lambda d: -abs(d["delta"]))
+        out.append({"scenario": sc["name"], "n": len(cell), "params": rows})
+    return out
+
+
+def strip_plot(values: List[Tuple[float, bool]], label: str,
+               width: int = 620, height: int = 92) -> str:
+    """One dot per sample, placed on the parameter axis and split by outcome."""
+    if not values:
+        return ""
+    xs = [v for v, _ in values]
+    lo, hi = min(xs), max(xs)
+    span = (hi - lo) or 1.0
+    pad_l, pad_r, mid = 54, 16, height / 2
+    plot_w = width - pad_l - pad_r
+
+    def px(v: float) -> float:
+        return pad_l + (v - lo) / span * plot_w
+
+    dots = []
+    for v, ok in values:
+        y = mid - 17 if ok else mid + 17
+        fill = "var(--ok-fg)" if ok else "var(--bad-fg)"
+        dots.append(f'<circle cx="{px(v):.1f}" cy="{y:.1f}" r="3.4" fill="{fill}" '
+                    f'fill-opacity="0.75"/>')
+    ticks = []
+    for frac in (0.0, 0.5, 1.0):
+        v = lo + frac * span
+        ticks.append(f'<text x="{px(v):.1f}" y="{height - 4}" class="tick" '
+                     f'text-anchor="middle">{v:.2f}</text>')
+    return (f'<svg viewBox="0 0 {width} {height}" class="chart" '
+            f'role="img" aria-label="{_esc(label)} sensitivity">'
+            f'<line x1="{pad_l}" y1="{mid}" x2="{width - pad_r}" y2="{mid}" '
+            f'class="axis"/>'
+            f'<text x="6" y="{mid - 13}" class="tick">intended</text>'
+            f'<text x="6" y="{mid + 21}" class="tick">not</text>'
+            f'{"".join(dots)}{"".join(ticks)}</svg>')
+
+
+def sensitivity_section(sens: List[dict]) -> str:
+    if not sens:
+        return ""
+    parts = ["<h2>Policy-parameter sensitivity</h2>",
+             "<p>The local simulator is deterministic, so repeats of one configuration "
+             "carry no information. The distribution here is over the <em>policy</em>: "
+             "each IDM run draws a different parameter vector from a Latin hypercube "
+             "over the six IDM parameters. These tables ask which of them move the "
+             "outcome.</p>"]
+    for entry in sens:
+        parts.append(f'<h3><code>{_esc(entry["scenario"])}</code> '
+                     f'<span class="key">({entry["n"]} parameter samples)</span></h3>')
+        rows = ["<div class='scroll'><table class='data'><thead>"
+                "<tr><th>parameter</th><th>median</th>"
+                "<th>intended rate, low half</th><th>intended rate, high half</th>"
+                "<th>&Delta;</th></tr></thead><tbody>"]
+        for r in entry["params"]:
+            strong = ' class="mark"' if abs(r["delta"]) >= 0.25 else ""
+            rows.append(
+                f'<tr{strong}><td><code>{_esc(r["param"])}</code></td>'
+                f'<td>{r["cut"]:.2f}</td>'
+                f'<td>{r["rate_lo"]:.0%} <span class="key">'
+                f'[{r["ci_lo"][0]:.0%}&ndash;{r["ci_lo"][1]:.0%}], n={r["n_lo"]}</span></td>'
+                f'<td>{r["rate_hi"]:.0%} <span class="key">'
+                f'[{r["ci_hi"][0]:.0%}&ndash;{r["ci_hi"][1]:.0%}], n={r["n_hi"]}</span></td>'
+                f'<td>{r["delta"]:+.0%}</td></tr>')
+        rows.append("</tbody></table></div>")
+        parts.append("".join(rows))
+        top = entry["params"][0] if entry["params"] else None
+        if top is not None and abs(top["delta"]) >= 0.15:
+            parts.append(f'<p class="key">Most influential: <code>'
+                         f'{_esc(top["param"])}</code>. Each dot is one sample, '
+                         f'placed by its <code>{_esc(top["param"])}</code> value.</p>')
+            parts.append(strip_plot(top["values"], top["param"]))
+        else:
+            parts.append('<p class="key">No parameter shifts the intended rate by '
+                         'more than 15 points across its median split: within this '
+                         'envelope the outcome is decided by the scenario, not by '
+                         'the tuning.</p>')
+    parts.append('<p class="key">Brackets are 95% Wilson intervals. A median split '
+                 'is a difference of proportions, not a fitted response &mdash; with '
+                 'a few dozen samples over six parameters it is the strongest claim '
+                 'the data supports, and six comparisons per scenario means an '
+                 'isolated 15-point gap is unremarkable.</p>')
+    return "".join(parts)
 
 
 # --------------------------------------------------------------------------
@@ -232,7 +385,10 @@ def results_table(rows) -> str:
         peak = f'{r["median_peak"]:,.0f}' if r["median_peak"] else "—"
         partners = ", ".join(f"{k} ({v})" for k, v in r["partners"].most_common()) or "—"
         cr = f'{r["collision_rate"]*100:.0f}% ({r["n_collision"]}/{r["n_runs"]})'
-        ir = f'{r["intended_rate"]*100:.0f}% ({r["n_intended"]}/{r["n_runs"]})'
+        lo, hi = wilson(r["n_intended"], r["n_runs"])
+        ci = (f' <span class="key">[{lo*100:.0f}&ndash;{hi*100:.0f}]</span>'
+              if r["n_runs"] > 1 else "")
+        ir = f'{r["intended_rate"]*100:.0f}% ({r["n_intended"]}/{r["n_runs"]}){ci}'
         body.append(
             f'<tr><td><code>{_esc(r["scenario"])}</code></td>'
             f'<td>{_esc(r["policy"])}</td><td class="num">{r["n_runs"]}</td>'
@@ -242,6 +398,40 @@ def results_table(rows) -> str:
             f'<td class="num">{r["mean_speed"]:.2f} m/s</td></tr>')
     return ('<div class="scroll"><table class="data"><thead>' + head +
             "</thead><tbody>" + "".join(body) + "</tbody></table></div>")
+
+
+DEFAULT_REPRO = """<pre><code>./experiments/run_experiments.sh                                    # 8 recorded runs
+REPEATS=20 ./experiments/run_experiments.sh results/repeats --no-video
+python experiments/make_report.py                                   # rebuild this page</code></pre>
+<p class="key">Requires a CARLA 0.9.16 server on port 2000 and the cp38 interpreter; the
+runner refuses to start on a Python that cannot import CARLA. A no-video run takes ~6 s,
+so the repeat sweep is cheap; recording video is what costs time.</p>
+</div>"""
+
+
+DEFAULT_NOTES = """<ul>
+<li><b>Repeatability.</b> Every cell above was unanimous across its 20 repeats — 20/20 or
+0/20, never a split — so within this configuration the outcomes are repeatable and the
+rates are not hiding variance. One earlier <em>video-recording</em> run of
+<code>left_turn</code> scripted did produce no collision; it came from the session in
+which the CARLA server later crashed, and it did not reproduce in 20 clean repeats. Treat
+marginal conflicts as worth re-running rather than trusting a single sample.</li>
+<li><b>Instrumentation is excluded.</b> The benchmark scenarios place a ground-decal
+marker at each conflict point as a distance reference. CARLA does occasionally report a
+contact when the ego drives over it (6 of these 160 runs, all in
+<code>left_turn</code> under IDM), so the metric counts only vehicle-versus-vehicle
+contacts; static-prop contacts are recorded separately as
+<code>n_static_contacts</code>. Counting them would let a clean run register as a
+crash.</li>
+<li><b>The NPCs have no driver model.</b> <code>drive()</code> is a waypoint+PID
+controller that never yields and never brakes for anything. Any ego that deviates from
+the scripted timing therefore risks being rear-ended by its own scripted follower — which
+is exactly what happens in <code>red_light</code> under IDM. That is a property of the
+benchmark, not a defect in IDM, and it is the single biggest caveat on these numbers.</li>
+<li><b>Lateral control is shared.</b> IDM is longitudinal only; steering reuses the same
+pure-pursuit rule as the compiled <code>drive()</code>, so both arms follow the identical
+route through each junction and the comparison isolates the longitudinal policy.</li>
+</ul>"""
 
 
 CSS = """
@@ -312,7 +502,8 @@ ul{padding-left:20px}
 """
 
 
-def build_html(cfg, rows) -> str:
+def build_html(cfg, rows, sens=None) -> str:
+    sens = sens or []
     scen = [s["name"] for s in cfg["scenarios"]]
     pol = [(p["id"], p["label"]) for p in cfg["policies"]]
     meta = [{"id": pid, "label": lab} for pid, lab in pol]
@@ -336,6 +527,19 @@ def build_html(cfg, rows) -> str:
     base_rows = [r for r in rows if r["policy"] == "scripted"]
     idm_full = sum(1 for r in idm_rows if r["intended_rate"] >= 0.999)
     base_full = sum(1 for r in base_rows if r["intended_rate"] >= 0.999)
+
+    # Measurement notes are a property of the experiment, not of the report.
+    # A config that states its own gets those; otherwise the CARLA benchmark's
+    # defaults stand, which is what this generator was first written for.
+    repro = cfg.get("report_reproducing")
+    repro_html = ("<pre class='note'>" + _esc(repro) + "</pre>") if repro \
+        else DEFAULT_REPRO
+
+    custom = cfg.get("report_notes")
+    if custom:
+        notes_html = "<ul>" + "".join(f"<li>{n}</li>" for n in custom) + "</ul>"
+    else:
+        notes_html = DEFAULT_NOTES
 
     p = cfg["idm_parameters"]
     idm_params = (f'v0={p["v0"]} m/s, T={p["T"]} s, a_max={p["a_max"]} m/s², '
@@ -436,6 +640,8 @@ scripted one — typically being rear-ended long before reaching the junction.</
 <p class="key">IDM is slower everywhere: it opens a following gap the scripted ego never
 kept, which is the mechanism behind most of the divergence.</p>
 
+{sensitivity_section(sens)}
+
 <h2>Per-cell measurements</h2>
 {results_table(rows)}
 <p class="key">Event counts are contact reports per physics substep, so they measure how
@@ -443,38 +649,10 @@ long bodies stayed in contact as much as how many distinct impacts occurred; con
 time, peak impulse and partner identity are the meaningful columns.</p>
 
 <h2>Measurement notes</h2>
-<ul>
-<li><b>Repeatability.</b> Every cell above was unanimous across its 20 repeats — 20/20 or
-0/20, never a split — so within this configuration the outcomes are repeatable and the
-rates are not hiding variance. One earlier <em>video-recording</em> run of
-<code>left_turn</code> scripted did produce no collision; it came from the session in
-which the CARLA server later crashed, and it did not reproduce in 20 clean repeats. Treat
-marginal conflicts as worth re-running rather than trusting a single sample.</li>
-<li><b>Instrumentation is excluded.</b> The benchmark scenarios place a ground-decal
-marker at each conflict point as a distance reference. CARLA does occasionally report a
-contact when the ego drives over it (6 of these 160 runs, all in
-<code>left_turn</code> under IDM), so the metric counts only vehicle-versus-vehicle
-contacts; static-prop contacts are recorded separately as
-<code>n_static_contacts</code>. Counting them would let a clean run register as a
-crash.</li>
-<li><b>The NPCs have no driver model.</b> <code>drive()</code> is a waypoint+PID
-controller that never yields and never brakes for anything. Any ego that deviates from
-the scripted timing therefore risks being rear-ended by its own scripted follower — which
-is exactly what happens in <code>red_light</code> under IDM. That is a property of the
-benchmark, not a defect in IDM, and it is the single biggest caveat on these numbers.</li>
-<li><b>Lateral control is shared.</b> IDM is longitudinal only; steering reuses the same
-pure-pursuit rule as the compiled <code>drive()</code>, so both arms follow the identical
-route through each junction and the comparison isolates the longitudinal policy.</li>
-</ul>
+{notes_html}
 
 <h2>Reproducing</h2>
-<pre><code>./experiments/run_experiments.sh                                    # 8 recorded runs
-REPEATS=20 ./experiments/run_experiments.sh results/repeats --no-video
-python experiments/make_report.py                                   # rebuild this page</code></pre>
-<p class="key">Requires a CARLA 0.9.16 server on port 2000 and the cp38 interpreter; the
-runner refuses to start on a Python that cannot import CARLA. A no-video run takes ~6 s,
-so the repeat sweep is cheap; recording video is what costs time.</p>
-</div>
+{repro_html}
 """
 
 
@@ -493,6 +671,21 @@ def text_summary(rows) -> str:
     return "\n".join(out)
 
 
+def text_sensitivity(sens) -> str:
+    if not sens:
+        return ""
+    out = ["", "policy-parameter sensitivity (intended-outcome rate, median split)"]
+    for entry in sens:
+        out.append(f'  {entry["scenario"]}  (n={entry["n"]} parameter samples)')
+        for r in entry["params"]:
+            flag = "  <-- " if abs(r["delta"]) >= 0.25 else "      "
+            out.append(f'    {r["param"]:<7} cut={r["cut"]:>6.2f}   '
+                       f'low {r["rate_lo"]:>4.0%} (n={r["n_lo"]:>2})   '
+                       f'high {r["rate_hi"]:>4.0%} (n={r["n_hi"]:>2})   '
+                       f'delta {r["delta"]:>+5.0%}{flag}')
+    return "\n".join(out)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("results_dir", nargs="?", default=os.path.join(HERE, "results"))
@@ -501,6 +694,7 @@ def main() -> int:
     args = ap.parse_args()
 
     cfg, runs = load(args.results_dir, args.config)
+    sens = parameter_sensitivity(cfg, runs)
     if not runs:
         print(f"no result JSON found under {args.results_dir}")
         return 1
@@ -508,11 +702,12 @@ def main() -> int:
     out_dir = os.path.dirname(os.path.abspath(args.out))
     os.makedirs(out_dir, exist_ok=True)
     with open(args.out, "w") as fh:
-        fh.write(build_html(cfg, rows))
+        fh.write(build_html(cfg, rows, sens))
     serialisable = [{**r, "partners": dict(r["partners"])} for r in rows]
     with open(os.path.join(out_dir, "summary.json"), "w") as fh:
         json.dump(serialisable, fh, indent=2, sort_keys=True)
     print(text_summary(rows))
+    print(text_sensitivity(sens))
     print(f"\nwrote {args.out}")
     return 0
 

@@ -10,6 +10,11 @@
 # a distribution. It exists here only to mirror the CARLA runner's interface;
 # use it to check that, not to average.
 #
+# For statistics, sample the POLICY instead of repeating the simulator:
+#     python experiments/sweep_idm_local.py -n 64 --check-determinism
+# which draws a Latin hypercube over the six IDM parameters and feeds the same
+# report generator.
+#
 # Writes, per run:
 #   OUT_DIR/<scenario>__<policy>[__rN].json   metrics summary
 #   OUT_DIR/<scenario>__<policy>[__rN].mp4    bird's-eye recording
