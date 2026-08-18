@@ -47,6 +47,7 @@ class Recorder:
         self._queue: "queue.Queue[Any]" = queue.Queue()
         self._collisions: List[dict] = []
         self._frame_idx = 0
+        self._sim_time = 0.0
         os.makedirs(self.frames_dir, exist_ok=True)
         # Clear stale frames from a previous run so ffmpeg does not append an
         # outdated tail (frame_%05d.png is overwritten from index 0 each run).
@@ -81,7 +82,12 @@ class Recorder:
         mag = math.sqrt(imp.x * imp.x + imp.y * imp.y + imp.z * imp.z)
         self._collisions.append({
             "frame": event.frame,
+            # Stamped from the last tick() so metrics can report when the first
+            # contact happened without attaching a second collision sensor.
+            "sim_time": self._sim_time,
             "other": event.other_actor.type_id,
+            "other_role": (getattr(event.other_actor, "attributes", {}) or {}
+                           ).get("role_name", ""),
             "impulse_mag": mag,
         })
 
@@ -90,6 +96,7 @@ class Recorder:
         return list(self._collisions)
 
     def tick(self, sim_time: float) -> None:
+        self._sim_time = sim_time
         if self._cam is None or np is None or cv2 is None:
             return
         try:

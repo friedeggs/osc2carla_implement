@@ -36,10 +36,38 @@ class _EmitLeaf(py_trees.behaviour.Behaviour):
         return py_trees.common.Status.SUCCESS
 
 
+#: Actions that actuate a vehicle. When a binding is handed to an external
+#: controller these are the ones the tree must stop issuing; everything else
+#: (assign_position, set_lights, emit, wait) stays, so the scenario's phases,
+#: events and monitors are unaffected.
+EXTERNALLY_CONTROLLED_ACTIONS = {
+    "drive": "running",        # open-ended in the tree -> stay RUNNING
+    "ram": "running",
+    "change_speed": "success",  # terminates in the tree -> succeed at once so
+    "change_lane": "success",   # the surrounding serial block still advances
+}
+
+
+class _ExternalControlLeaf(py_trees.behaviour.Behaviour):
+    """Placeholder for an action now issued by an external ego policy."""
+
+    def __init__(self, name: str, mode: str):
+        super().__init__(name=name)
+        self._mode = mode
+
+    def update(self):
+        if self._mode == "success":
+            return py_trees.common.Status.SUCCESS
+        return py_trees.common.Status.RUNNING
+
+
 class BehaviorTreeBuilder:
-    def __init__(self, annotated: AnnotatedScenario, ctx: ExecutionContext):
+    def __init__(self, annotated: AnnotatedScenario, ctx: ExecutionContext,
+                 external_actors=None):
         self.annotated = annotated
         self.ctx = ctx
+        #: binding names whose actuation is delegated to an external policy
+        self.external_actors = set(external_actors or ())
 
     def build(self) -> py_trees.behaviour.Behaviour:
         do = self.annotated.scenario.do
@@ -86,6 +114,12 @@ class BehaviorTreeBuilder:
 
     def _build_action(self, action: nodes.ActionCall) -> py_trees.behaviour.Behaviour:
         actor_binding = action.actor
+        if actor_binding in self.external_actors:
+            base = action.behaviour.rsplit(".", 1)[-1]
+            mode = EXTERNALLY_CONTROLLED_ACTIONS.get(base)
+            if mode is not None:
+                return _ExternalControlLeaf(
+                    name=f"External[{actor_binding}.{base}]", mode=mode)
         actor_handle = None
         if actor_binding is not None:
             actor_handle = _ActorHandle(self.ctx, actor_binding)

@@ -98,8 +98,9 @@ scenario left_turn:
         keep(it.color == "0,90,160")
 
     # Where the ego's turn arc crosses the oncoming lane.  As in red_light.osc,
-    # static.prop.dirtdebris01 is used because it registers no collision
-    # events; z cancels the initializer's 0.5 m spawn lift.
+    # static.prop.dirtdebris01 is the flattest ground decal available; it is
+    # not strictly collision-free, so collision metrics must discount
+    # non-vehicle contacts.  z cancels the initializer's 0.5 m spawn lift.
     conflict_point: stationary_object with:
         keep(it.name == "conflict_point")
         keep(it.model == "static.prop.dirtdebris01")

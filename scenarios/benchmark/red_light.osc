@@ -99,10 +99,12 @@ scenario red_light:
         keep(it.model == "vehicle.nissan.micra")
         keep(it.color == "0,90,160")
 
-    # Zero-collision ground decal marking the conflict point of the two lanes.
-    # It is the fixed reference the junction-occupancy conditions are written
-    # against; static.prop.dirtdebris01 is used because it registers no
-    # collision events, so it cannot pollute the ego's collision overlay.
+    # Ground decal marking the conflict point of the two lanes. It is the
+    # fixed reference the junction-occupancy conditions are written against.
+    # static.prop.dirtdebris01 is the flattest available prop and very rarely
+    # reports contact -- but it is NOT collision-free: driving over it does
+    # occasionally raise a collision event (measured in ~5% of benchmark runs),
+    # so metrics must discount non-vehicle contacts rather than trust the prop.
     # z is set below grade so the decal sits flush with the road (the
     # initializer lifts every spawn by 0.5 m).
     conflict_point: stationary_object with:

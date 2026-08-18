@@ -80,6 +80,22 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument("--record-width", type=int, default=1280)
     parser.add_argument("--record-height", type=int, default=720)
     parser.add_argument("--record-fps", type=int, default=20)
+    parser.add_argument("--ego-policy", default=None,
+                        help="Hand the ego's actuation to an external policy "
+                             "instead of the compiled behaviour tree. Either a "
+                             "built-in name ('idm', 'constant') or an import "
+                             "path 'module:ClassName'. The rest of the scenario "
+                             "(NPC timelines, events, monitors) is unchanged.")
+    parser.add_argument("--ego-actor", default=None,
+                        help="Binding the --ego-policy drives (defaults to "
+                             "--record-actor, else the first vehicle binding).")
+    parser.add_argument("--policy-param", action="append", default=[],
+                        metavar="K=V",
+                        help="Policy parameter override, repeatable "
+                             "(e.g. --policy-param v0=8.3).")
+    parser.add_argument("--metrics-out", default=None,
+                        help="Write a JSON run summary (collision occurrence, "
+                             "impulses, motion stats) to this path.")
     args = parser.parse_args(argv)
 
     annotated = analyse(args.scenario, stdlib_dir=args.stdlib)
@@ -98,10 +114,31 @@ def main(argv: Optional[List[str]] = None) -> int:
     print(f"  variables: {[v.name for v in annotated.scenario.variables]}", file=sys.stderr)
 
     from .backend import BehaviorTreeBuilder, ExecutionContext, Recorder, ScenarioInitializer
+    from .backend.metrics import MetricsCollector
+    from .backend.policy import (ExternalEgoController, parse_policy_params,
+                                 resolve_policy)
+
+    def _default_ego_binding():
+        if args.ego_actor:
+            return args.ego_actor
+        if args.record_actor:
+            return args.record_actor
+        for b in annotated.scenario.actors:
+            if b.type_name == "vehicle":
+                return b.name
+        return None
+
+    ego_binding = _default_ego_binding() if args.ego_policy else None
+    external_actors = {ego_binding} if ego_binding else set()
+    policy_params = parse_policy_params(args.policy_param)
 
     if args.dry_run:
         ctx = ExecutionContext(annotated)
-        tree = BehaviorTreeBuilder(annotated, ctx).build()
+        tree = BehaviorTreeBuilder(annotated, ctx,
+                                   external_actors=external_actors).build()
+        if args.ego_policy:
+            print(f"[osc2carla] ego policy: {args.ego_policy} driving "
+                  f"{ego_binding!r}", file=sys.stderr)
         print("[osc2carla] behaviour tree (dry-run):", file=sys.stderr)
         print(py_trees.display.ascii_tree(tree), file=sys.stderr)
         return 0
@@ -146,9 +183,38 @@ def main(argv: Optional[List[str]] = None) -> int:
             print(f"[osc2carla] recording {rec_binding!r} -> {args.record_video}",
                   file=sys.stderr)
 
-    tree = BehaviorTreeBuilder(annotated, ctx).build()
+    tree = BehaviorTreeBuilder(annotated, ctx,
+                               external_actors=external_actors).build()
     behaviour_tree = py_trees.trees.BehaviourTree(root=tree)
     behaviour_tree.setup(timeout=15)
+
+    # --- external ego controller entry point ---------------------------------
+    controller = None
+    if args.ego_policy:
+        policy_cls = resolve_policy(args.ego_policy)
+        controller = ExternalEgoController(world, carla_map, ctx, ego_binding,
+                                           policy_cls(), params=policy_params)
+        unknown = getattr(controller.policy, "_unknown", None)
+        if unknown:
+            print(f"[osc2carla] warning: ignored unknown policy params {unknown}",
+                  file=sys.stderr)
+        print(f"[osc2carla] ego policy {args.ego_policy!r} driving {ego_binding!r}; "
+              f"behaviour-tree actuation for that binding is disabled",
+              file=sys.stderr)
+
+    metrics = None
+    if args.metrics_out:
+        metric_actor = ctx.actor(ego_binding) if ego_binding else \
+            (recorder.target if recorder is not None else None)
+        metric_binding = ego_binding or (args.record_actor or "ego")
+        if metric_actor is None:
+            metric_actor = ctx.actor(metric_binding)
+        # Reuse the recorder's sensor when there is one, so a run cannot be
+        # double-counted by two collision sensors on the same actor.
+        metrics = MetricsCollector(world, metric_actor, metric_binding,
+                                   attach_sensor=(recorder is None))
+        if recorder is not None:
+            metrics.use_external_collisions(recorder._collisions)
 
     ctx.blackboard["go_signal"] = True
 
@@ -170,8 +236,17 @@ def main(argv: Optional[List[str]] = None) -> int:
                 sim_t = time.time() - start
             ctx.advance_tick(sim_t)
             behaviour_tree.tick()
+            # After the tree, so the policy has the last word on the ego. The
+            # tree no longer actuates that binding, so there is no contention.
+            leader_gap = None
+            if controller is not None:
+                obs = controller.tick(sim_t)
+                if obs.leader is not None:
+                    leader_gap = obs.leader.gap
             if recorder is not None:
                 recorder.tick(sim_t)
+            if metrics is not None:
+                metrics.tick(sim_t, leader_gap=leader_gap)
             if sim_cap and sim_cap > 0 and sim_t >= sim_cap:
                 print(f"[osc2carla] reached scenario duration {sim_cap:.1f}s",
                       file=sys.stderr)
@@ -182,6 +257,23 @@ def main(argv: Optional[List[str]] = None) -> int:
                       file=sys.stderr)
                 break
     finally:
+        if metrics is not None:
+            summary = metrics.write(
+                args.metrics_out,
+                scenario=os.path.splitext(os.path.basename(args.scenario))[0],
+                scenario_path=os.path.abspath(args.scenario),
+                ego_policy=(args.ego_policy or "scripted"),
+                policy_params=policy_params,
+                sim_duration=sim_t,
+                sim_duration_requested=sim_cap,
+                fixed_dt=args.fixed_dt,
+            )
+            metrics.close()
+            print(f"[osc2carla] metrics -> {args.metrics_out} "
+                  f"(collision_occurred={summary['collision_occurred']}, "
+                  f"events={summary['n_collision_events']})", file=sys.stderr)
+        if controller is not None:
+            controller.teardown()
         if recorder is not None:
             out = recorder.finalize()
             if out:

@@ -107,9 +107,10 @@ scenario stop_sign:
         keep(it.color == "0,90,160")
 
     # Single shared reference for every approach's stop line and clearance
-    # test.  static.prop.dirtdebris01 registers no collision events, so it
-    # cannot fabricate a contact in a scenario whose whole point is that
-    # nothing touches; z cancels the initializer's 0.5 m spawn lift.
+    # test.  It sits on the median between the carriageways, off every
+    # vehicle's path, which matters here because static.prop.dirtdebris01 is
+    # not strictly collision-free (see red_light.osc) and this scenario's whole
+    # point is that nothing touches.  z cancels the initializer's 0.5 m lift.
     junction_centre: stationary_object with:
         keep(it.name == "junction_centre")
         keep(it.model == "static.prop.dirtdebris01")

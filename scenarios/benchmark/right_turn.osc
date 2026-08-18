@@ -104,9 +104,9 @@ scenario right_turn:
         keep(it.model == "vehicle.citroen.c3")
         keep(it.color == "0,90,160")
 
-    # Marks where the turn arc joins the destination lane.  Same trick as
-    # red_light.osc: static.prop.dirtdebris01 is the one ground decal that
-    # registers no collision events, so it cannot pollute the ego's overlay,
+    # Marks where the turn arc joins the destination lane.  Same reference
+    # trick as red_light.osc: static.prop.dirtdebris01 is the flattest ground
+    # decal available, though not strictly collision-free (see red_light.osc),
     # and z is set below grade to cancel the initializer's 0.5 m spawn lift.
     merge_point: stationary_object with:
         keep(it.name == "merge_point")
