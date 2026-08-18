@@ -42,6 +42,13 @@ def _connect_carla(host: str, port: int, timeout: float):
     return client
 
 
+def _connect_local(args):
+    """Build the in-process simulator. Nothing is connected to; it is local."""
+    from .localsim import Client
+    return Client(args.host, args.port, turn_preference=args.junction_turn,
+                  fixed_delta_seconds=args.fixed_dt)
+
+
 def _maybe_load_world(client, map_name: str):
     world = client.get_world()
     cur_map = world.get_map().name
@@ -50,10 +57,91 @@ def _maybe_load_world(client, map_name: str):
     return client.load_world(map_name)
 
 
+def _load_local_world(client, map_name: str, town_override: Optional[str]):
+    """Load a local town, reporting when the scenario's map has no stand-in."""
+    from .localsim.towns import BUILTIN_TOWNS, resolve_town_name
+    requested = town_override or map_name
+    town, aliased = resolve_town_name(requested)
+    if aliased:
+        print(f"[osc2carla] no local road network for {requested!r}; using "
+              f"town {town!r} instead -- {BUILTIN_TOWNS[town].description} "
+              f"A scenario with hard-coded CARLA coordinates will not stage "
+              f"the same conflict here.", file=sys.stderr)
+    return client.load_world(town)
+
+
+def _display_available() -> bool:
+    return bool(os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"))
+
+
+def _resolve_render_mode(args) -> str:
+    """'window', 'headless' or 'off' from --render-mode auto."""
+    if args.render_mode != "auto":
+        return args.render_mode
+    if _display_available():
+        return "window"
+    return "headless" if args.record_video else "off"
+
+
+def _running_leaves(node, out=None):
+    """Names of the RUNNING leaves of a behaviour tree, for the overlay."""
+    import py_trees as _pt
+    out = [] if out is None else out
+    children = getattr(node, "children", None) or []
+    if node.status == _pt.common.Status.RUNNING and not children:
+        out.append(node.name)
+    for child in children:
+        _running_leaves(child, out)
+    return out
+
+
+def _binding_labels(annotated, ctx) -> dict:
+    """actor id -> scenario binding name, so the overlay can name the cars."""
+    labels = {}
+    for binding in annotated.scenario.actors:
+        actor = ctx.actor(binding.name)
+        if actor is not None:
+            labels[actor.id] = binding.name
+    return labels
+
+
 def main(argv: Optional[List[str]] = None) -> int:
-    parser = argparse.ArgumentParser(description="OpenSCENARIO 2 compiler/runtime for CARLA")
-    parser.add_argument("scenario", help="Path to .osc file")
+    parser = argparse.ArgumentParser(description="OpenSCENARIO 2 compiler and runtime: CARLA, or the bundled local simulator")
+    parser.add_argument("scenario", nargs="?",
+                        help="Path to .osc file")
     parser.add_argument("--stdlib", default=None, help="Override stdlib directory")
+    parser.add_argument("--backend", choices=("carla", "pygame"), default="carla",
+                        help="Where the compiled behaviour tree executes: a "
+                             "CARLA server, or the bundled standalone "
+                             "simulator with a pygame bird's-eye view "
+                             "(default: carla).")
+    parser.add_argument("--town", default=None,
+                        help="Local backend only: road network to load, "
+                             "overriding the scenario's map_file. See "
+                             "--list-towns.")
+    parser.add_argument("--list-towns", action="store_true",
+                        help="Print the local backend's road networks and exit.")
+    parser.add_argument("--junction-turn", default="straight",
+                        choices=("straight", "left", "right"),
+                        help="Local backend only: which manoeuvre drive() "
+                             "takes at a junction, since it follows "
+                             "next()[0] (default: straight).")
+    parser.add_argument("--render-mode", default="auto",
+                        choices=("auto", "window", "headless", "off"),
+                        help="Local backend only: 'window' opens a pygame "
+                             "view, 'headless' renders off-screen (needed "
+                             "for --record-video without a display), 'off' "
+                             "simulates without drawing. 'auto' picks a "
+                             "window when a display exists (default).")
+    parser.add_argument("--render-scale", type=float, default=None,
+                        help="Local backend only: pixels per metre. Default "
+                             "fits the whole town in the window.")
+    parser.add_argument("--no-follow", action="store_true",
+                        help="Local backend only: keep the camera on the whole "
+                             "town instead of following --record-actor.")
+    parser.add_argument("--realtime", action="store_true",
+                        help="Local backend only: play back at wall-clock "
+                             "speed instead of as fast as possible.")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=2000)
     parser.add_argument("--carla-timeout", type=float, default=240.0)
@@ -98,6 +186,19 @@ def main(argv: Optional[List[str]] = None) -> int:
                              "impulses, motion stats) to this path.")
     args = parser.parse_args(argv)
 
+    if args.list_towns:
+        from .localsim.towns import BUILTIN_TOWNS, TOWN_ALIASES
+        print("local backend road networks:")
+        for name, town in sorted(BUILTIN_TOWNS.items()):
+            print(f"  {name:<10} {town.description}")
+        print("\nCARLA map names accepted as aliases:")
+        for carla_name, local in sorted(TOWN_ALIASES.items()):
+            print(f"  {carla_name:<14} -> {local}")
+        return 0
+
+    if not args.scenario:
+        parser.error("a scenario path is required")
+
     annotated = analyse(args.scenario, stdlib_dir=args.stdlib)
     if args.emit_python is not None:
         from .backend.codegen import emit
@@ -114,9 +215,19 @@ def main(argv: Optional[List[str]] = None) -> int:
     print(f"  variables: {[v.name for v in annotated.scenario.variables]}", file=sys.stderr)
 
     from .backend import BehaviorTreeBuilder, ExecutionContext, Recorder, ScenarioInitializer
+    from .backend import simapi
     from .backend.metrics import MetricsCollector
     from .backend.policy import (ExternalEgoController, parse_policy_params,
                                  resolve_policy)
+
+    if not args.dry_run:
+        try:
+            simapi.bind(args.backend)
+        except ImportError as exc:
+            print(f"[osc2carla] backend {args.backend!r} unavailable: {exc}\n"
+                  f"            {simapi.BACKENDS[args.backend]}",
+                  file=sys.stderr)
+            return 2
 
     def _default_ego_binding():
         if args.ego_actor:
@@ -143,14 +254,20 @@ def main(argv: Optional[List[str]] = None) -> int:
         print(py_trees.display.ascii_tree(tree), file=sys.stderr)
         return 0
 
-    client = _connect_carla(args.host, args.port, args.carla_timeout)
+    local = args.backend == "pygame"
+    if local:
+        args.no_sync = False        # the local simulator only steps on tick()
+    client = _connect_local(args) if local \
+        else _connect_carla(args.host, args.port, args.carla_timeout)
     map_attr = next((b for b in annotated.scenario.actors if b.type_name == "map"), None)
     map_name = "Town10HD_Opt"
     if map_attr is not None:
         attrs = getattr(map_attr, "attributes", {}) or {}
         map_name = attrs.get("map_file", map_name)
+    print(f"[osc2carla] backend: {simapi.describe()}", file=sys.stderr)
     print(f"[osc2carla] loading map: {map_name}", file=sys.stderr)
-    world = _maybe_load_world(client, map_name)
+    world = _load_local_world(client, map_name, args.town) if local \
+        else _maybe_load_world(client, map_name)
     carla_map = world.get_map()
 
     original_settings = world.get_settings()
@@ -166,22 +283,44 @@ def main(argv: Optional[List[str]] = None) -> int:
     if not args.no_sync:
         world.tick()
 
+    rec_binding = args.record_actor
+    if rec_binding is None:
+        for b in annotated.scenario.actors:
+            if b.type_name == "vehicle":
+                rec_binding = b.name
+                break
+    rec_actor = ctx.actor(rec_binding) if rec_binding else None
+
     recorder = None
-    if args.record_video:
-        rec_binding = args.record_actor
-        if rec_binding is None:
-            for b in annotated.scenario.actors:
-                if b.type_name == "vehicle":
-                    rec_binding = b.name
-                    break
-        rec_actor = ctx.actor(rec_binding) if rec_binding else None
-        if rec_actor is not None:
-            recorder = Recorder(world, rec_actor, args.record_video,
-                                width=args.record_width,
-                                height=args.record_height,
-                                fps=args.record_fps)
-            print(f"[osc2carla] recording {rec_binding!r} -> {args.record_video}",
-                  file=sys.stderr)
+    viewer = None
+    if local:
+        render_mode = _resolve_render_mode(args)
+        if render_mode != "off":
+            from .localsim.render import BevRenderer, RendererUnavailable
+            try:
+                viewer = BevRenderer(
+                    world, rec_actor, output_video=args.record_video,
+                    width=args.record_width, height=args.record_height,
+                    fps=args.record_fps, display=(render_mode == "window"),
+                    scale=args.render_scale, follow=not args.no_follow,
+                    caption=f"osc2carla — {annotated.scenario.name}")
+                recorder = viewer
+                print(f"[osc2carla] bird's-eye view: {render_mode}"
+                      + (f", recording -> {args.record_video}"
+                         if args.record_video else ""), file=sys.stderr)
+            except RendererUnavailable as exc:
+                print(f"[osc2carla] {exc}", file=sys.stderr)
+                return 2
+        elif args.record_video:
+            print("[osc2carla] --record-video needs rendering; "
+                  "--render-mode off ignores it", file=sys.stderr)
+    elif args.record_video and rec_actor is not None:
+        recorder = Recorder(world, rec_actor, args.record_video,
+                            width=args.record_width,
+                            height=args.record_height,
+                            fps=args.record_fps)
+        print(f"[osc2carla] recording {rec_binding!r} -> {args.record_video}",
+              file=sys.stderr)
 
     tree = BehaviorTreeBuilder(annotated, ctx,
                                external_actors=external_actors).build()
@@ -225,10 +364,30 @@ def main(argv: Optional[List[str]] = None) -> int:
     if sim_cap and sim_cap > 0:
         print(f"[osc2carla] scenario sim duration: {sim_cap:.1f}s", file=sys.stderr)
 
+    hud = None
+    if viewer is not None:
+        from .localsim.render import HudState
+        hud = HudState(scenario=annotated.scenario.name,
+                       backend=simapi.sim.name or args.backend,
+                       town=carla_map.name,
+                       ego_policy=args.ego_policy,
+                       ego_binding=ego_binding,
+                       bindings=_binding_labels(annotated, ctx),
+                       note="drive() takes the "
+                            f"{args.junction_turn} exit at junctions")
+
     start = time.time()
     sim_t = 0.0
     try:
         while time.time() - start < args.timeout:
+            if viewer is not None and viewer.paused:
+                # Hold the world still but keep the window responsive.
+                hud.paused = True
+                if not viewer.tick(sim_t, hud):
+                    print("[osc2carla] window closed", file=sys.stderr)
+                    break
+                viewer.throttle()
+                continue
             if not args.no_sync:
                 world.tick()
                 sim_t += args.fixed_dt
@@ -243,7 +402,17 @@ def main(argv: Optional[List[str]] = None) -> int:
                 obs = controller.tick(sim_t)
                 if obs.leader is not None:
                     leader_gap = obs.leader.gap
-            if recorder is not None:
+            if viewer is not None:
+                hud.paused = False
+                hud.events = dict(ctx.blackboard)
+                hud.active_leaves = _running_leaves(behaviour_tree.root)
+                hud.tree_status = str(behaviour_tree.root.status)
+                if not viewer.tick(sim_t, hud):
+                    print("[osc2carla] window closed", file=sys.stderr)
+                    break
+                if args.realtime:
+                    viewer.throttle(int(round(1.0 / max(args.fixed_dt, 1e-3))))
+            elif recorder is not None:
                 recorder.tick(sim_t)
             if metrics is not None:
                 metrics.tick(sim_t, leader_gap=leader_gap)
@@ -279,7 +448,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             if out:
                 print(f"[osc2carla] wrote {out} ({len(recorder.collisions)} collision events)",
                       file=sys.stderr)
-        if not args.no_sync:
+        if not local and not args.no_sync:
             world.apply_settings(original_settings)
         for a in list(getattr(initializer, "_spawned", [])):
             try:

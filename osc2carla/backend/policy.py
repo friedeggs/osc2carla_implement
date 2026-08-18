@@ -38,10 +38,7 @@ import math
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
-try:
-    import carla  # type: ignore
-except Exception:  # noqa: BLE001
-    carla = None  # type: ignore
+from .simapi import sim as carla
 
 
 # --------------------------------------------------------------------------
@@ -327,7 +324,7 @@ class ExternalEgoController:
     def tick(self, sim_time: float) -> Observation:
         obs = self.observe(sim_time)
         cmd = self.policy.act(obs).clamped()
-        if carla is not None:
+        if carla:
             self._actor.apply_control(
                 carla.VehicleControl(throttle=cmd.throttle, steer=cmd.steer,
                                      brake=cmd.brake)

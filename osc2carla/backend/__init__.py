@@ -1,3 +1,4 @@
+from . import simapi  # noqa: F401  # side-effect: binds CARLA if present
 from .context import ExecutionContext, Quantity  # noqa: F401
 from .method_registry import MethodRegistry, register  # noqa: F401
 from . import atomic_behaviors  # noqa: F401  # side-effect: registers actions

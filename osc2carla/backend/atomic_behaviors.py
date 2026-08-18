@@ -1,4 +1,10 @@
-"""CARLA-specific atomic behaviours implemented as py_trees leaves."""
+"""Atomic behaviours: the py_trees leaves an OSC2 action compiles to.
+
+Written against CARLA's actor API and reached through :mod:`.simapi`, so the
+same leaves drive either the CARLA server or the bundled local simulator --
+which is the point of the indirection: an action's semantics are a property of
+the language, not of the simulator underneath.
+"""
 from __future__ import annotations
 
 import math
@@ -6,13 +12,9 @@ from typing import Any, List, Optional
 
 import py_trees
 
-try:
-    import carla  # type: ignore
-except Exception:  # noqa: BLE001
-    carla = None  # type: ignore
-
 from .context import ExecutionContext, Quantity, _ActorHandle
 from .method_registry import register
+from .simapi import sim as carla
 
 
 def _value(q) -> float:
@@ -52,7 +54,7 @@ class WaypointFollowerLite(py_trees.behaviour.Behaviour):
 
     def update(self):
         actor = _carla_actor(self._actor)
-        if actor is None or carla is None:
+        if actor is None or not carla:
             return py_trees.common.Status.RUNNING
         target_v = _wrap_speed(self._v_set, self._ctx)
         v = actor.get_velocity()
@@ -74,7 +76,7 @@ class WaypointFollowerLite(py_trees.behaviour.Behaviour):
         return py_trees.common.Status.RUNNING
 
     def _compute_steer(self, actor) -> float:
-        if carla is None:
+        if not carla:
             return 0.0
         world = self._ctx.world
         if world is None:
@@ -120,7 +122,7 @@ class ChangeTargetSpeed(py_trees.behaviour.Behaviour):
 
     def update(self):
         actor = _carla_actor(self._actor)
-        if actor is None or carla is None:
+        if actor is None or not carla:
             return py_trees.common.Status.SUCCESS
         v = actor.get_velocity()
         cur = math.sqrt(v.x ** 2 + v.y ** 2 + v.z ** 2)
@@ -187,7 +189,7 @@ class LaneChangeLite(py_trees.behaviour.Behaviour):
 
     def update(self):
         actor = _carla_actor(self._actor)
-        if actor is None or carla is None or self._ctx.carla_map is None:
+        if actor is None or not carla or self._ctx.carla_map is None:
             return py_trees.common.Status.SUCCESS
         loc = actor.get_location()
         wp_cur = self._ctx.carla_map.get_waypoint(loc, project_to_road=True)
@@ -254,7 +256,7 @@ class SetLights(py_trees.behaviour.Behaviour):
 
     def update(self):
         actor = _carla_actor(self._actor)
-        if actor is None or carla is None:
+        if actor is None or not carla:
             return py_trees.common.Status.SUCCESS
         states = carla.VehicleLightState
         flag = states.NONE
@@ -290,7 +292,7 @@ class AssignCelestial(py_trees.behaviour.Behaviour):
         self._elevation = elevation
 
     def update(self):
-        if self._ctx.world is None or carla is None:
+        if self._ctx.world is None or not carla:
             return py_trees.common.Status.SUCCESS
         weather = self._ctx.world.get_weather()
         weather.sun_azimuth_angle = float(self._azimuth)
@@ -318,7 +320,7 @@ class RamTarget(py_trees.behaviour.Behaviour):
     def update(self):
         me = _carla_actor(self._actor)
         them = _carla_actor(self._target)
-        if me is None or them is None or carla is None:
+        if me is None or them is None or not carla:
             return py_trees.common.Status.RUNNING
         my_tf = me.get_transform()
         their_loc = them.get_location()

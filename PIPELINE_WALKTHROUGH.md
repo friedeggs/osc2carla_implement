@@ -82,13 +82,18 @@ supported) plus its scope, unit table, and enum table.
 
 ## Stage 3 — Backend: spawn, compile to behavior tree, tick
 
-### 3a. CARLA connection and world setup (`cli.py:109–130`)
+### 3a. Simulator connection and world setup (`cli.py`)
 
 The CLI connects a `carla.Client`, reads the map name from the `map`
 binding's `keep(it.map_file == "...")` (default `Town10HD_Opt`), loads the
 world, and switches it to **synchronous mode** with
 `fixed_delta_seconds = 0.05` (20 Hz). Determinism comes from this: the
 server only advances when the client calls `world.tick()`.
+
+`--backend pygame` substitutes `osc2carla.localsim.Client` here and nothing
+else changes: the local simulator implements the same `Client` / `World` /
+`Map` surface and is *only* ever synchronous, so the tick loop below is
+literally the same loop. See 3g.
 
 ### 3b. ScenarioInitializer — declarative spawning (`backend/initializer.py`)
 
@@ -203,6 +208,45 @@ the frame directory with
 `ffmpeg -framerate 20 -i frame_%05d.png -c:v libx264 -pix_fmt yuv420p out.mp4`.
 
 The CLI then restores async world settings and destroys spawned actors.
+
+On the local backend, `localsim/render.py:BevRenderer` takes the recorder's
+place behind an identical `tick(sim_time)` / `finalize()` / `collisions`
+interface. There is no camera sensor to pop frames from: it draws the lane
+graph and the actors' collision boxes top-down with pygame, overlays the
+blackboard events and the RUNNING leaves of the tree, and writes the same
+`frame_%05d.png` sequence for the same ffmpeg call.
+
+### 3g. Backend selection (`backend/simapi.py`, `localsim/`)
+
+The atomic behaviours, the initializer, the ego-policy hand-off and the
+metrics collector are written against CARLA's actor API. They used to reach
+it with a guarded `import carla`, which made "no simulator" the only
+alternative to CARLA. `simapi` replaces that with a proxy object bound at
+run time:
+
+```python
+from .simapi import sim as carla     # module-shaped proxy, never None
+```
+
+`simapi.bind("carla")` points it at the real API — done automatically at
+import when CARLA is installed, so the CARLA path is byte-for-byte the same
+behaviour as before. `simapi.bind("pygame")` points it at
+`localsim/api.py`, which re-declares the slice of CARLA's surface this
+compiler actually touches. The only edit the behaviour code needed was
+turning `if carla is None:` into `if not carla:`, because a proxy is never
+`None`.
+
+Everything upstream of that line — grammar, AST, scope resolution, unit
+table, `MethodRegistry`, the py_trees tree, `--ego-policy` — is untouched
+and shared. What the local backend supplies instead of a UE4 server is a
+synthesised lane graph (`localsim/towns.py`, `roadmap.py`), a kinematic
+bicycle model carrying 2-D momentum (`localsim/actors.py`), and oriented-box
+collision detection with an impulse response (`localsim/collision.py`).
+
+Its limit is geometry, not mechanism: there are no OpenDRIVE towns without
+the CARLA binary, so scenarios that hard-code Town10HD_Opt coordinates run
+without staging their conflict. See the README section "Local simulator
+backend".
 
 ---
 
@@ -342,6 +386,9 @@ No GPU on the login node, so CARLA runs in a Slurm job. From this directory:
 ```bash
 # compile-only sanity check (works anywhere, no CARLA needed):
 bash run_dry_run.sh
+
+# execute + record on the bundled local simulator (no CARLA, no GPU):
+./run_local_demo.sh --headless
 
 # full run on a GPU node (boots CARLA off-screen, records both demos):
 sbatch sbatch_closed_loop_demo.sh

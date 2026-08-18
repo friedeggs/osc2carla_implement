@@ -17,13 +17,16 @@ Internals of each compiler stage: [PIPELINE_WALKTHROUGH.md](PIPELINE_WALKTHROUGH
 ```
 osc2carla_implement/
 ├── osc2carla/            # compiler package (frontend / middle / backend)
+│   └── localsim/         # standalone simulator + pygame BEV renderer
 ├── grammar/              # OpenSCENARIO 2.1 ANTLR grammar (from py-osc2)
 ├── stdlib/               # types.osc + domain.osc stubs used at analyse time
 ├── scenarios/            # .osc inputs (see table below)
+│   └── local/            # scenarios written against the local backend's town
 ├── third_party/py-osc2/  # vendored grammar source + MPL-2.0 license
 ├── requirements.txt
 ├── env.sh                # sets OSC2CARLA_ROOT and PYTHONPATH
 ├── run_dry_run.sh        # no CARLA: parse + print behaviour trees
+├── run_local_demo.sh     # no CARLA: run + record on the local simulator
 ├── run_record_closed_loop_demo.sh   # boots CARLA, records the two paper demos
 ├── run_record_simple_example.sh     # shorter single-car smoke recording
 ├── run_record_scenario_collision.sh # collision demo only
@@ -39,6 +42,7 @@ osc2carla_implement/
 | `scenarios/simple_example.osc` | One-car cruise / slow / stop smoke test | yes, Town10HD_Opt |
 | `scenarios/hello_world.osc` | Paper case study (Listings 2–3) | **dry-run only** here (needs Town06 + `lane()` placement, neither of which this baseline implements) |
 | `scenarios/nl2/nl2.osc` | Extra NL-template experiment, **not from the paper** | optional |
+| `scenarios/local/local_crossing.osc` | Junction failure-to-yield, written against the local backend's `grid` town | **no** — `--backend pygame` |
 
 `--dry-run` on `hello_world.osc` is the compile-only check against the paper’s behaviour tree. Running it live would need Town06 and lane-based spawn, which this baseline does not implement (see “Coverage vs. the paper” below).
 
@@ -49,6 +53,8 @@ osc2carla_implement/
 - For a live run: **CARLA 0.9.16** server + its `PythonAPI/carla` on `PYTHONPATH`
 - For `--record-video`: OpenCV (`cv2`) and `ffmpeg`
 - GPU for the UE4 server (off-screen rendering is fine)
+- For `--backend pygame`: `pygame` only — no CARLA, no GPU, no server, and no
+  Python 3.8 constraint
 
 On this cluster the parent tree already has the server and venv:
 
@@ -92,6 +98,114 @@ parallel
 ```
 
 `hello_world.osc` should also parse; that is the paper case-study tree.
+
+## 1b. Local simulator backend (no CARLA, no GPU)
+
+`--backend pygame` runs the *same* compiled behaviour tree against a
+standalone simulator bundled in `osc2carla/localsim/`, drawn top-down with
+pygame. Nothing in that package imports `carla`; nothing about it needs a
+server, a GPU, or Python 3.8. It is the laptop loop for writing and debugging
+scenarios.
+
+```bash
+pip install pygame
+source env.sh
+python -m osc2carla scenarios/local/local_crossing.osc --backend pygame
+```
+
+Or all four local-runnable scenarios, recorded:
+
+```bash
+./run_local_demo.sh --headless
+```
+
+### What is shared, and what is not
+
+The frontend, the semantic analysis, the `MethodRegistry`, the py_trees tree
+and the `--ego-policy` hand-off are **the same code on both backends**. The
+atomic behaviours reach whichever simulator is bound through
+`osc2carla/backend/simapi.py`, a proxy object that stands in for the `carla`
+module:
+
+```python
+from .simapi import sim as carla       # was: try: import carla
+...
+control = carla.VehicleControl(throttle=1.0)
+```
+
+`simapi.bind("carla")` points it at the real CARLA API (this happens
+automatically at import when CARLA is installed, so the CARLA path is
+unchanged); `simapi.bind("pygame")` points it at
+`osc2carla/localsim/api.py`, which re-declares the slice of CARLA's surface
+the backend actually uses — `Location`/`Rotation`/`Transform`,
+`VehicleControl`, `VehicleLightState`, `World.tick()/spawn_actor()`,
+`Map.get_waypoint().next()`, `Actor.apply_control()`,
+`sensor.other.collision`. Because the proxy is never `None`, the old
+"is a simulator available?" guards read `if not carla:` instead of
+`if carla is None:`; that is the only edit the behaviour code needed.
+
+What the local simulator provides:
+
+| Piece | Implementation |
+|---|---|
+| Road network | `localsim/towns.py` — synthesised lane graphs, since OpenDRIVE towns ship with the CARLA binary |
+| Waypoint API | `localsim/roadmap.py` — lane polylines, successor/predecessor graph, nearest-lane index |
+| Vehicle physics | `localsim/actors.py` — kinematic bicycle model carrying 2-D momentum, so an impact can push and spin a car |
+| Collisions | `localsim/collision.py` — oriented-box SAT, impulse response, one event per contacting pair per tick (CARLA reports per substep, which is why `metrics.py` treats the count as contact *duration*) |
+| Rendering | `localsim/render.py` — bird's-eye pygame view, window or off-screen, PNG frames → MP4 via ffmpeg |
+
+### Fidelity: what this is not
+
+**It previews scenario logic; it does not reproduce CARLA measurements.**
+There is no photorealistic sensor model, no tyre model, and — the one that
+bites — no CARLA town geometry. `localsim/towns.py` synthesises grid networks:
+
+```
+$ python -m osc2carla --list-towns
+grid        3x3 junctions, 80 m spacing, two lanes each way.
+loop        Single rectangular circuit with long straights.
+wide_grid   4x4 junctions covering x,y in [-80, 160].
+```
+
+CARLA map names are aliased onto these (`Town10HD_Opt` → `grid`) so an
+unmodified `.osc` file loads and reports the substitution. The consequence:
+
+- Scenarios that place actors by **map spawn point or relative topology**
+  (`closed_loop_demo`, `scenario_collision`, `simple_example`) transfer as-is
+  and behave qualitatively as they do on CARLA.
+- Scenarios that **hard-code Town10HD_Opt coordinates** — everything under
+  `scenarios/benchmark/` — will load and run, but their actors land wherever
+  those coordinates fall in the grid, and the staged conflict does not
+  develop. `run_local_demo.sh` deliberately skips them.
+  `scenarios/local/local_crossing.osc` is the local-town counterpart: same
+  mechanisms (relative placement, live distance monitor, cross-actor
+  `emit`/`wait`, `drive()`), geometry that exists here.
+
+One more difference worth knowing: this baseline's `drive()` follows
+`waypoint.next()[0]`, so which way a vehicle goes through a junction is a
+property of the map, not of anything the scenario can request. CARLA's order
+comes from the OpenDRIVE file; here it is explicit, and `--junction-turn
+{straight,left,right}` selects it.
+
+### Keys and flags
+
+In a window: `SPACE` pause, `TAB` next camera target, `F` toggle follow,
+`+`/`-` zoom, `Q` quit.
+
+| Flag | Purpose |
+|---|---|
+| `--backend pygame` | run on the local simulator instead of CARLA |
+| `--list-towns` | print the local road networks and the CARLA aliases |
+| `--town NAME` | override the scenario's `map_file` |
+| `--junction-turn` | manoeuvre `drive()` takes at a junction |
+| `--render-mode` | `auto` / `window` / `headless` / `off` |
+| `--render-scale` | pixels per metre (default: follow at 7, or fit the town) |
+| `--no-follow` | keep the whole town in frame instead of chasing an actor |
+| `--realtime` | play at wall-clock speed rather than as fast as possible |
+
+`--record-video`, `--metrics-out`, `--ego-policy`, `--policy-param` and
+`--sim-duration` work identically on both backends; the metrics JSON has the
+same schema either way.
 
 ## 2. Full run (CARLA + MP4)
 
@@ -169,3 +283,6 @@ python -m osc2carla <scenario.osc> [options]
 | `--record-actor NAME` | binding to attach the camera to (`hero`, `ego`, …) |
 | `--sim-duration SEC` | stop after this many simulated seconds (default: largest `wait elapsed` in the file) |
 | `--host` / `--port` | CARLA RPC (default `127.0.0.1:2000`) |
+| `--backend {carla,pygame}` | execution backend; `pygame` is the bundled local simulator (see §1b) |
+| `--metrics-out PATH` | JSON run summary (collision occurrence, impulses, motion stats) |
+| `--ego-policy NAME` | hand the ego's actuation to an external policy (`idm`, `constant`, or `module:Class`) |

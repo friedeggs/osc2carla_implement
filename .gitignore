@@ -6,6 +6,7 @@ __pycache__/
 # Local recordings / Slurm logs (cluster jobs write to ../install/run_output)
 *.mp4
 *_frames/
+local_run/
 sbatch-*.out
 sbatch-*.err
 *.log

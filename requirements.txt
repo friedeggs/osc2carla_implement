@@ -8,6 +8,10 @@ numpy>=1.19,<1.25
 # `module load opencv/4.5.5` instead of this package.
 opencv-python>=4.5,<4.9
 
+# Local simulator backend (--backend pygame): a bird's-eye window / MP4 with
+# no CARLA, no GPU and no server. Optional; the CARLA path never imports it.
+pygame>=2.0
+
 # Live runs also need the CARLA 0.9.16 Python API, e.g.
 #   pip install dist/carla-0.9.16-cp38-cp38-linux_x86_64.whl
 # or PYTHONPATH pointing at $CARLA_ROOT/PythonAPI/carla

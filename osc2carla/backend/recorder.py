@@ -14,10 +14,7 @@ import queue
 import subprocess
 from typing import Any, List, Optional
 
-try:
-    import carla  # type: ignore
-except Exception:  # noqa: BLE001
-    carla = None  # type: ignore
+from .simapi import sim as carla
 
 try:
     import numpy as np
@@ -57,7 +54,7 @@ class Recorder:
             except OSError:
                 pass
 
-        if carla is None or world is None or target_actor is None:
+        if not carla or world is None or target_actor is None:
             return
 
         bps = world.get_blueprint_library()

@@ -3,12 +3,10 @@ from __future__ import annotations
 
 import random
 import sys
+import zlib
 from typing import Any, Dict, List, Optional
 
-try:
-    import carla  # type: ignore
-except Exception:  # noqa: BLE001
-    carla = None  # type: ignore
+from .simapi import sim as carla
 
 from ..frontend import nodes
 from ..middle import AnnotatedScenario
@@ -78,7 +76,7 @@ class ScenarioInitializer:
         return getattr(val, "_binding", None)
 
     def _spawn_binding(self, binding: nodes.ScenarioActorBinding) -> None:
-        if carla is None:
+        if not carla:
             return
         attrs: Dict[str, Any] = getattr(binding, "attributes", {}) or {}
         blueprint_id = attrs.get("model")
@@ -158,7 +156,7 @@ class ScenarioInitializer:
 
     def _compute_transform(self, binding: nodes.ScenarioActorBinding,
                             init_mods: List[nodes.Modifier]):
-        if carla is None or self.map is None:
+        if not carla or self.map is None:
             return None, False
         position_mod = next((m for m in init_mods if m.name == "position"), None)
         transform = None
@@ -223,7 +221,12 @@ class ScenarioInitializer:
             chosen = self._spawn_point_with_road_ahead(spawn_points, required_ahead)
             if chosen is not None:
                 return chosen, False
-        return spawn_points[hash(binding.name) % len(spawn_points)], False
+        # zlib.crc32, not hash(): PYTHONHASHSEED randomises str hashing per
+        # process, so the same scenario picked a different spawn point on
+        # every run. A stable digest keeps a run repeatable, which matters
+        # most on the local backend where re-running is the debug loop.
+        index = zlib.crc32(binding.name.encode("utf-8")) % len(spawn_points)
+        return spawn_points[index], False
 
     def _spawn_point_with_road_ahead(self, spawn_points, distance):
         """Pick a spawn point that has at least ``distance`` of road ahead.

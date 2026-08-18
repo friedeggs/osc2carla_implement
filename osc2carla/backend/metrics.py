@@ -20,10 +20,7 @@ import math
 import os
 from typing import Any, Dict, List, Optional
 
-try:
-    import carla  # type: ignore
-except Exception:  # noqa: BLE001
-    carla = None  # type: ignore
+from .simapi import sim as carla
 
 
 class MetricsCollector:
@@ -44,7 +41,7 @@ class MetricsCollector:
         self._last_loc = None
         self._external: Optional[List[Dict[str, Any]]] = None
 
-        if attach_sensor and carla is not None and world is not None and actor is not None:
+        if attach_sensor and carla and world is not None and actor is not None:
             bp = world.get_blueprint_library().find("sensor.other.collision")
             self._sensor = world.spawn_actor(bp, carla.Transform(), attach_to=actor)
             self._sensor.listen(self._on_collision)
