@@ -237,9 +237,15 @@ python experiments/make_report.py experiments/results_local     -c experiments/b
 | Scenario | `--junction-turn` | Intent | Observed (scripted arm) |
 |---|---|---|---|
 | `red_light` | `straight` | violator T-bones the ego inside the junction | collision at t = 6.95 s, partner `violator` |
-| `right_turn` | `right` | ego rear-ended after turning right | collision at t = 13.80 s, partner `rear_ender` |
-| `left_turn` | `left` | oncoming car strikes the ego mid-turn | collision at t = 9.00 s, partner `oncoming` |
+| `right_turn` | `right` | ego rear-ended after turning right | collision at t = 9.35 s, partner `rear_ender` |
+| `left_turn` | `left` | oncoming car strikes the ego mid-turn | collision at t = 8.65 s, partner `oncoming` |
 | `stop_sign` | `straight` | precedence negotiated, nothing is hit | **no collision** — the pass condition |
+
+The scripted arm produces the intended outcome, with the intended partner, in
+all four. Under `--ego-policy idm` only `left_turn` does: IDM is rear-ended by
+its own follower in `red_light`, meets the wrong vehicle in `right_turn`, and
+is struck by the crosser in `stop_sign` — it has no term for a crossing
+conflict, so it does not yield.
 
 These are **ports, not the same runs**. The geometry is synthesised, so the
 absolute numbers are not comparable with `benchmark.json`; the intended
@@ -254,15 +260,24 @@ difference: a **left** turn is connected only from the innermost lane, and a
 the other lane has no such connector and falls through to going straight. So
 in `left_turn`, the ego and the two cars queued with it sit on the inner
 eastbound lane and turn; `oncoming_b` sits on the outer westbound lane and
-does not. Where even that is not enough, the striking vehicle switches to
-`ram(target: ego)` before it reaches the junction, which is what the CARLA
-originals already do.
+does not.
 
-One artefact worth knowing: `right_turn`'s corner is the tightest manoeuvre
-the town offers, and the pure-pursuit controller comes out of it carrying
-about 2 m of lateral error — more than half a lane — so the ego finishes one
-lane inboard of the connector's nominal exit. It still turns right and is
-still rear-ended in-lane from directly behind; the note is in the file.
+**No `ram`.** These scenarios use only constructs the paper documents — see
+[Construct provenance](PIPELINE_WALKTHROUGH.md) for the line-by-line mapping.
+The striking vehicle keeps executing `drive()` on its own lane at its own
+declared speed; `drive()` has no car-following, yielding or collision-avoidance
+term, so a vehicle that does not change what it is doing is one that does not
+give way. Two consequences: impacts are softer than the `ram` versions (`ram`
+applied full throttle regardless of the declared speed), and approach
+distances had to be re-tuned, because the striking vehicle now has to *be*
+somewhere at the right moment rather than home in on the ego.
+
+`right_turn` needed one thing this baseline lacked: `keep_lane()`, a Table 2
+spatial modifier. Its corner is the tightest manoeuvre in the town and
+pure-pursuit exits it with ~2 m of lateral error, so `drive()`'s per-tick
+`get_waypoint()` hands the ego to the neighbouring lane. `keep_lane()` latches
+the lane the connector fed it into and holds it. `ram` used to mask this by
+homing on the ego's actual position.
 
 ### Keys and flags
 
@@ -337,12 +352,28 @@ NPC spawns ~25 m ahead, rotated 180°, then `ram(target: ego)` at full throttle.
 
 ## Coverage vs. the paper
 
-Implemented and used by the demos: `serial` / `parallel` / `one_of`, `wait` / `emit`, `drive`+`speed`, `change_speed`, `change_lane`, `ram`, `set_lights`, `assign_celestial_position`, relative and absolute `position(…, at: start)`, physical units, `keep(it.field == literal)`, live `speed` / `ahead_of` / `object_distance`.
+Implemented and used by the demos: `serial` / `parallel` / `one_of`, `wait` / `emit`, `drive`+`speed`, `keep_lane`, `change_speed`, `change_lane`, `set_lights`, `assign_celestial_position`, relative and absolute `position(…, at: start)`, physical units, `keep(it.field == literal)`, live `speed` / `ahead_of` / `object_distance`.
+
+Every one of those appears in the paper — in Table 2's capability checklist, in
+Listings 1–3, or both.
+
+**Not in the paper: `ram(target:)`.** It was a local extension registered
+through the `MethodRegistry` (which Table 2 does sanction, under *Extensibility
+→ Custom actions*), used to force the adversarial outcomes. The word does not
+occur anywhere in the paper, whose action vocabulary has no pursuit primitive
+and whose only case study is a collision-*avoidance* scenario. It has been
+removed from every scenario under `scenarios/benchmark/` and
+`scenarios/local/benchmark/`; the striking vehicle now simply keeps driving its
+own lane, which in a runtime with no yielding term is exactly what failing to
+yield looks like. `scenarios/scenario_collision.osc` still uses it — ramming
+the ego is that demo's entire premise, so it cannot be expressed without it.
 
 Silently missing or degraded (details in [PIPELINE_WALKTHROUGH.md](PIPELINE_WALKTHROUGH.md)):
 
 - `lane(…, at: start)` is parsed and **ignored** (default spawn point)
-- `keep_lane`, `follow_path`, pedestrians, traffic lights, most `keep()` forms
+- `follow_path`, `follow_trajectory`, time gap / space gap / headway,
+  pedestrians, traffic lights, road conditions, most `keep()` forms — all
+  claimed ✓ in the paper's Table 2
 - unmapped actions compile to a silent `Success` leaf named `Unmapped[…]`
 - `hello_world.osc` therefore **compiles** but does not run as in the paper on this cluster (no Town06; no lane spawn)
 

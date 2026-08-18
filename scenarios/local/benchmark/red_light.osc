@@ -6,7 +6,7 @@ import "domain.osc"
 #   python -m osc2carla scenarios/local/benchmark/red_light.osc \
 #       --backend pygame --town grid --junction-turn straight --sim-duration 18
 #
-# Same natural-language scenario as the CARLA original:
+# Natural-language scenario, unchanged from the CARLA original:
 #
 #   The ego vehicle is crossing an intersection.  There is surrounding traffic
 #   on both the ego's road and the crossing road.  While the ego is inside the
@@ -14,13 +14,13 @@ import "domain.osc"
 #   and rams the ego from the side.
 #
 # Stage geometry -- centre junction of the `grid` town, centre (80, 80), box
-# x in [73, 87], y in [73, 87].  Run `python -m osc2carla.localsim.mapview`
+# x in [69, 91], y in [69, 91].  Run `python -m osc2carla.localsim.mapview`
 # for the full reference sheet.
 #
 #                        violator, stopper
 #                            |  x = 78.25 southbound (+y), from the north arm
 #                            v
-#   ego, lead, follower <--- [ JUNCTION (80, 80) ] <--- ego enters from x = 135
+#   ego, lead, follower <--- [ JUNCTION (80, 80) ] <--- ego enters from x = 130
 #   ==========================================================================
 #                     y = 78.25 westbound (-x), h = 3.1416
 #
@@ -31,23 +31,36 @@ import "domain.osc"
 #   * every vehicle here goes straight, so --junction-turn straight routes all
 #     of them correctly and no two actors need different manoeuvres.
 #
-# Actors, unchanged from the original (5 vehicles + 1 reference marker):
-#   ego, lead, follower on the westbound carriageway; violator (CarlaCola is
-#   not in the local blueprint table, so a european_hgv stands in for the
-#   truck) and stopper on the crossing road.
+# How the violation is expressed.  The CARLA original switched the violator to
+# ram(target: ego) on the trigger.  ram is not an OSC2Runner construct -- it
+# appears nowhere in the paper -- so the violator instead does the only thing
+# a red-light runner actually does: it does not brake.  drive() has no
+# yielding or collision-avoidance term, so a vehicle that keeps driving its
+# lane through the box IS a vehicle that has run the red.  On the trigger it
+# accelerates to beat the phase, which is a change of declared speed rather
+# than a change of controller.  The stopper on the same approach brakes to a
+# standstill; that contrast is what makes the violation legible.
 #
-# Differences from the CARLA original, all of them geometric:
-#   * approach lengths are shorter.  A grid arm is 66 m between junction
-#     boxes, against the 50 m and 42 m run-ups the CARLA file uses, so the
-#     ego starts 52 m out and the violator 42 m out rather than being placed
-#     against a much larger junction.
+# The substitution costs nothing here: the violator was already on a
+# collision course, so removing ram moved first contact by 0.05 s and the
+# peak impulse by 0.2%.
+#
+# Actors (5 vehicles + 1 reference marker): ego, lead, follower on the
+# westbound carriageway; violator (a european_hgv stands in for the CarlaCola,
+# which the local blueprint table does not carry) and stopper on the crossing
+# road.
+#
+# Differences from the CARLA original, all geometric:
+#   * approach lengths are shorter.  A grid arm is 58 m between junction
+#     boxes, so the ego starts 52 m out and the violator 42 m out.
 #   * junction_entry_radius is 14 m, not 20 m: this junction box is 22 m
 #     across where Town10HD_Opt's junction 189 measures ~20 m centre to stop
 #     line.  conflict_radius is unchanged -- it is a property of how long the
 #     ego takes to clear the crossing lane, not of the junction's size.
 #
-# Expected on the local backend: collision_occurred = true, first contact
-# around t = 8 s, the violator's side impact on the ego inside the box.
+# Expected on the local backend: collision_occurred = true, first contact at
+# t = 6.95 s, peak impulse ~17800, sole partner violator.
+
 scenario red_light:
     carla_map: map with:
         keep(it.map_file == "grid")
@@ -95,6 +108,8 @@ scenario red_light:
     var v_lead: speed = v_ego + 4kph
     var v_follower: speed = v_ego - 2kph
     var v_violator: speed = 32kph
+    # Speed it accelerates to once it has committed to the red.
+    var v_violator_run: speed = v_violator + 8kph
     var v_stopper: speed = 26kph
 
     # --- Distances ---
@@ -175,10 +190,16 @@ scenario red_light:
                     speed(v_violator)
                 wait @EGO_AT_CONFLICT_POINT
 
-            # Phase 2: enter on the red and strike the ego's side.
+            # Phase 2: enter on the red. It does not brake and it does not
+            # yield -- it accelerates to beat the phase and holds its own
+            # lane straight through the box, which puts it across the ego's
+            # path. drive() has no yielding term, so "runs the red" needs no
+            # special action: it is the absence of the stopper's braking.
             emit RED_LIGHT_RUN
             one_of:
-                violator.ram(target: ego)
+                violator.drive() with:
+                    speed(v_violator_run)
+                    keep_lane()
                 wait elapsed(11s)
 
         # ---- STOPPER: same approach, obeys the red at the stop line ----

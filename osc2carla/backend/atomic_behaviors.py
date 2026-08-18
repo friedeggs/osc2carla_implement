@@ -38,10 +38,25 @@ def _wrap_speed(v_setpoint, ctx: ExecutionContext) -> float:
 
 
 class WaypointFollowerLite(py_trees.behaviour.Behaviour):
+    """PID longitudinal control + pure-pursuit steering along the lane graph.
+
+    ``keep_lane`` implements the spatial modifier of the same name (Table 2,
+    "Spatial Modifiers: ... position, lane, keep_lane, and change_lane").
+    Without it, steering re-projects the actor onto whichever lane is nearest
+    on every tick, so a vehicle that leaves a junction carrying lateral error
+    can be captured by the neighbouring lane and stay there. With it, the leaf
+    latches the first non-junction lane it sees and steers toward that lane's
+    centreline for as long as it runs, crossing junctions unchanged.
+    """
+
+    #: how many lateral steps to take when pulling back to the locked lane
+    MAX_LANE_CORRECTION = 3
+
     def __init__(self, actor_handle, v_setpoint, ctx,
                  name="DriveLite", lookahead=5.0,
                  kp=0.6, ki=0.05, kd=0.1,
-                 max_throttle=1.0, max_brake=1.0):
+                 max_throttle=1.0, max_brake=1.0,
+                 keep_lane=False):
         super().__init__(name=name)
         self._actor = actor_handle
         self._v_set = v_setpoint
@@ -51,6 +66,13 @@ class WaypointFollowerLite(py_trees.behaviour.Behaviour):
         self._max_throttle, self._max_brake = max_throttle, max_brake
         self._err_sum = 0.0
         self._prev_err = 0.0
+        self._keep_lane = keep_lane
+        self._locked_lane = None
+        self._left_junction = False
+
+    def initialise(self):
+        self._locked_lane = None
+        self._left_junction = False
 
     def update(self):
         actor = _carla_actor(self._actor)
@@ -86,6 +108,7 @@ class WaypointFollowerLite(py_trees.behaviour.Behaviour):
         wp = carla_map.get_waypoint(loc, project_to_road=True)
         if wp is None:
             return 0.0
+        wp = self._hold_lane(wp)
         next_wps = wp.next(self._lookahead)
         if not next_wps:
             return 0.0
@@ -98,17 +121,60 @@ class WaypointFollowerLite(py_trees.behaviour.Behaviour):
         return max(-1.0, min(1.0, err))
 
 
+    def _hold_lane(self, wp):
+        """Pull the steering reference back onto the locked lane.
+
+        Latching is lazy: a leaf that starts while the actor is inside a
+        junction has no lane to hold yet, so it takes the first ordinary lane
+        it reaches. Correction only ever moves sideways within one
+        carriageway -- lane ids carry the side of the road in their sign, so a
+        mismatched sign means the actor is somewhere this modifier has no
+        opinion about.
+        """
+        if not self._keep_lane:
+            return wp
+        if wp.is_junction:
+            # Inside a junction there is no lane to hold; note that the next
+            # ordinary lane is a new one to commit to.
+            self._left_junction = True
+            return wp
+        if self._locked_lane is None or self._left_junction:
+            # Latch lazily, and re-latch on the way out of a junction: the
+            # connector decides which lane the vehicle emerges in, and that
+            # is the lane it should then hold.
+            self._locked_lane = wp.lane_id
+            self._left_junction = False
+            return wp
+        target = self._locked_lane
+        if wp.lane_id == target or (wp.lane_id > 0) != (target > 0):
+            return wp
+        for _ in range(self.MAX_LANE_CORRECTION):
+            nxt = wp.get_left_lane() if abs(wp.lane_id) > abs(target) \
+                else wp.get_right_lane()
+            if nxt is None or nxt.is_junction:
+                break
+            wp = nxt
+            if wp.lane_id == target:
+                break
+        return wp
+
+
 @register("vehicle.drive")
 def _build_drive(actor_handle, args, modifiers, ctx):
     v_setpoint: Any = 0.0
+    keep_lane = False
     for m in modifiers:
         if m.name == "speed":
             if m.args.positional:
                 v_setpoint = ctx.eval(m.args.positional[0])
             elif "target" in m.args.named:
                 v_setpoint = ctx.eval(m.args.named["target"])
-    name = f"Drive[{actor_handle._binding}]"
-    return WaypointFollowerLite(actor_handle, v_setpoint, ctx, name=name)
+        elif m.name == "keep_lane":
+            keep_lane = True
+    suffix = "+keep_lane" if keep_lane else ""
+    name = f"Drive[{actor_handle._binding}{suffix}]"
+    return WaypointFollowerLite(actor_handle, v_setpoint, ctx, name=name,
+                                keep_lane=keep_lane)
 
 
 class ChangeTargetSpeed(py_trees.behaviour.Behaviour):

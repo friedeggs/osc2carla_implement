@@ -1,0 +1,173 @@
+<title>Ego Policy Benchmark</title>
+<style>
+:root{
+  --bg:#ffffff; --fg:#15181d; --muted:#5b6472; --line:#e2e6ec; --card:#f7f8fa;
+  --series-a:#4f6fb0; --series-b:#c9722f;
+  --ok-bg:#e7f4ec; --ok-fg:#1c6b3f; --warn-bg:#fdf2dc; --warn-fg:#8a5a10;
+  --bad-bg:#fceaea; --bad-fg:#992222; --accent:#4f6fb0;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --bg:#14161a; --fg:#e8eaee; --muted:#98a2b3; --line:#2a2f37; --card:#1b1e24;
+    --series-a:#7d9ede; --series-b:#e09353;
+    --ok-bg:#14301f; --ok-fg:#78d39b; --warn-bg:#33270f; --warn-fg:#e7bd6d;
+    --bad-bg:#331a1a; --bad-fg:#f09a9a; --accent:#7d9ede;
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#14161a; --fg:#e8eaee; --muted:#98a2b3; --line:#2a2f37; --card:#1b1e24;
+  --series-a:#7d9ede; --series-b:#e09353;
+  --ok-bg:#14301f; --ok-fg:#78d39b; --warn-bg:#33270f; --warn-fg:#e7bd6d;
+  --bad-bg:#331a1a; --bad-fg:#f09a9a; --accent:#7d9ede;
+}
+*{box-sizing:border-box}
+body{background:var(--bg);color:var(--fg);margin:0;
+  font:16px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+.wrap{max-width:900px;margin:0 auto;padding:40px 20px 80px}
+h1{font-size:1.9rem;line-height:1.25;margin:0 0 6px}
+h2{font-size:1.25rem;margin:44px 0 12px;padding-top:14px;border-top:1px solid var(--line)}
+h3{font-size:1.02rem;margin:26px 0 8px}
+.sub{color:var(--muted);margin:0 0 8px}
+code{background:var(--card);padding:.12em .38em;border-radius:4px;
+  font:0.87em ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+pre{background:var(--card);border:1px solid var(--line);border-radius:8px;
+  padding:12px 14px;overflow-x:auto}
+pre code{background:none;padding:0}
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;
+  padding:16px 18px;margin:18px 0}
+.scroll{overflow-x:auto;-webkit-overflow-scrolling:touch;margin:14px 0}
+table{border-collapse:collapse;width:100%;font-size:.86rem;min-width:620px}
+th,td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--line)}
+th{color:var(--muted);font-weight:600}
+td.num{text-align:right;font-variant-numeric:tabular-nums}
+table.matrix{min-width:520px}
+table.matrix th:first-child{width:210px}
+.cell{text-align:center;border-radius:6px}
+.cell .mark{display:block;font-weight:700;font-size:1.05rem}
+.cell .note{display:block;font-size:.72rem;color:var(--muted)}
+.cell.ok{background:var(--ok-bg)} .cell.ok .mark{color:var(--ok-fg)}
+.cell.warn{background:var(--warn-bg)} .cell.warn .mark{color:var(--warn-fg)}
+.cell.bad{background:var(--bad-bg)} .cell.bad .mark{color:var(--bad-fg)}
+.chart{width:100%;height:auto;display:block}
+.chart .grid{stroke:var(--line);stroke-width:1}
+.chart .axis{stroke:var(--muted);stroke-width:1}
+.chart .tick,.chart .cat,.chart .barval,.chart .na,.chart .axis-label{
+  fill:var(--muted);font-size:11px;
+  font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+.chart .barval{fill:var(--fg);font-size:10.5px}
+.chart .cat{fill:var(--fg);font-size:11.5px}
+.chart .na{font-style:italic}
+.legend{display:flex;gap:18px;flex-wrap:wrap;margin:6px 0 2px;font-size:.84rem;color:var(--muted)}
+.legend-item{display:flex;align-items:center;gap:7px}
+.legend i{width:13px;height:13px;border-radius:3px;display:inline-block}
+.key{font-size:.85rem;color:var(--muted);margin-top:8px}
+.finding{border-left:3px solid var(--accent);padding:2px 0 2px 14px;margin:16px 0}
+.finding b{color:var(--fg)}
+ul{padding-left:20px}
+</style>
+<div class="wrap">
+<h1>Swapping the ego controller on four junction scenarios</h1>
+<p class="sub">IDM against the compiled behaviour tree, measured by collision occurrence
+over 8 runs on CARLA 0.9.16 / Town10HD_Opt.</p>
+
+<div class="card">
+<b>What was run.</b> Each of the four <code>scenarios/benchmark</code> scenarios was
+executed under two arms: once exactly as compiled, and once with the ego's actuation
+handed to an Intelligent Driver Model through the new <code>--ego-policy</code> entry
+point. Everything else — NPC timelines, spawn geometry, <code>emit</code>/<code>wait</code>
+events, the monitors that fire the adversarial triggers — is identical between arms;
+only the ego's controller changes. IDM ran with library defaults (v0=8.333 m/s, T=1.5 s, a_max=1.5 m/s², b=2.0 m/s², δ=4.0, s0=2.0 m) in all
+four scenarios, so no per-scenario tuning is hiding in the results. Each cell was
+repeated 20 times.
+</div>
+
+<h2>The metric</h2>
+<p>The measurement is <b>collision occurrence</b> on the ego's collision sensor, used as
+a proxy for whether the scenario still executed what it was written to exercise. The
+proxy is directional — it is not "fewer crashes is better":</p>
+<ul>
+<li>the three crash scenarios have executed correctly when the ego <b>is</b> hit; a
+clean run means the scripted conflict never developed;</li>
+<li><code>stop_sign</code> has executed correctly when the ego is <b>not</b> hit.</li>
+</ul>
+<p>So the raw proxy is <code>collision_occurred == expect_collision</code>. Running the
+experiment showed that this alone is too weak: a collision with the <em>wrong</em>
+vehicle scores as a pass. The report therefore also checks the striking vehicle's
+<code>role_name</code> against the scenario's scripted antagonist. The headline number
+below is that stricter <b>intended-conflict rate</b>; where the two diverge, the cell is
+annotated <em>wrong-antagonist</em>.</p>
+
+<h2>Result</h2>
+<div class="scroll"><table class="matrix"><thead><tr><th></th><th>red_light</th><th>right_turn</th><th>left_turn</th><th>stop_sign</th></tr></thead><tbody><tr><th>Scripted (behaviour tree)</th><td class="cell ok"><span class="mark">100%</span><span class="note">1/1 runs</span></td><td class="cell ok"><span class="mark">100%</span><span class="note">1/1 runs</span></td><td class="cell ok"><span class="mark">100%</span><span class="note">1/1 runs</span></td><td class="cell ok"><span class="mark">100%</span><span class="note">1/1 runs</span></td></tr><tr><th>IDM policy</th><td class="cell bad"><span class="mark">0%</span><span class="note">0/1 runs · 1 wrong-antagonist</span></td><td class="cell bad"><span class="mark">0%</span><span class="note">0/1 runs · 1 wrong-antagonist</span></td><td class="cell ok"><span class="mark">100%</span><span class="note">1/1 runs</span></td><td class="cell bad"><span class="mark">0%</span><span class="note">0/1 runs</span></td></tr></tbody></table></div>
+<p class="key">Percentage of runs reproducing the scenario's <em>intended</em> outcome.
+Scripted baseline: 4/4 scenarios at 100%. IDM:
+1/4.</p>
+
+<div class="finding"><b>red_light</b> — IDM never reproduced the intended conflict; it was hit by <code>follower</code> instead of the scripted <code>violator</code>. Mean ego speed 6.83 m/s vs 8.11 m/s scripted; baseline reproduced its intent in 1/1 runs.</div><div class="finding"><b>right_turn</b> — IDM never reproduced the intended conflict; it was hit by <code>adjacent_b</code> instead of the scripted <code>rear_ender</code>. Mean ego speed 6.81 m/s vs 3.70 m/s scripted; baseline reproduced its intent in 1/1 runs.</div><div class="finding"><b>left_turn</b> — IDM reproduced the intended conflict in every run. Mean ego speed 2.29 m/s vs 5.38 m/s scripted; baseline reproduced its intent in 1/1 runs.</div><div class="finding"><b>stop_sign</b> — IDM was hit by <code>crosser</code>, which the scenario avoids. Mean ego speed 7.12 m/s vs 4.69 m/s scripted; baseline reproduced its intent in 1/1 runs.</div>
+
+<h2>Charts</h2>
+
+<h3>Intended-conflict reproduction rate</h3>
+<div class="legend"><span class="legend-item"><i style="background:var(--series-a)"></i>Scripted (behaviour tree)</span><span class="legend-item"><i style="background:var(--series-b)"></i>IDM policy</span></div>
+<svg viewBox="0 0 640 240" role="img" preserveAspectRatio="xMidYMid meet" class="chart"><line x1="54" y1="192.0" x2="626" y2="192.0" class="grid"/><text x="46" y="196.0" class="tick" text-anchor="end">0</text><line x1="54" y1="148.0" x2="626" y2="148.0" class="grid"/><text x="46" y="152.0" class="tick" text-anchor="end">25</text><line x1="54" y1="104.0" x2="626" y2="104.0" class="grid"/><text x="46" y="108.0" class="tick" text-anchor="end">50</text><line x1="54" y1="60.0" x2="626" y2="60.0" class="grid"/><text x="46" y="64.0" class="tick" text-anchor="end">75</text><line x1="54" y1="16.0" x2="626" y2="16.0" class="grid"/><text x="46" y="20.0" class="tick" text-anchor="end">100</text><text x="13" y="104.0" class="axis-label" text-anchor="middle" transform="rotate(-90 13 104.0)">% of runs</text><rect x="76.5" y="16.0" width="46.0" height="176.0" rx="2" fill="var(--series-a)"/><text x="99.5" y="11.0" class="barval" text-anchor="middle">100</text><rect x="128.5" y="192.0" width="46.0" height="0.8" rx="2" fill="var(--series-b)"/><text x="151.5" y="187.0" class="barval" text-anchor="middle">0</text><text x="125.5" y="212" class="cat" text-anchor="middle">red_light</text><rect x="219.5" y="16.0" width="46.0" height="176.0" rx="2" fill="var(--series-a)"/><text x="242.5" y="11.0" class="barval" text-anchor="middle">100</text><rect x="271.5" y="192.0" width="46.0" height="0.8" rx="2" fill="var(--series-b)"/><text x="294.5" y="187.0" class="barval" text-anchor="middle">0</text><text x="268.5" y="212" class="cat" text-anchor="middle">right_turn</text><rect x="362.5" y="16.0" width="46.0" height="176.0" rx="2" fill="var(--series-a)"/><text x="385.5" y="11.0" class="barval" text-anchor="middle">100</text><rect x="414.5" y="16.0" width="46.0" height="176.0" rx="2" fill="var(--series-b)"/><text x="437.5" y="11.0" class="barval" text-anchor="middle">100</text><text x="411.5" y="212" class="cat" text-anchor="middle">left_turn</text><rect x="505.5" y="16.0" width="46.0" height="176.0" rx="2" fill="var(--series-a)"/><text x="528.5" y="11.0" class="barval" text-anchor="middle">100</text><rect x="557.5" y="192.0" width="46.0" height="0.8" rx="2" fill="var(--series-b)"/><text x="580.5" y="187.0" class="barval" text-anchor="middle">0</text><text x="554.5" y="212" class="cat" text-anchor="middle">stop_sign</text><line x1="54" y1="192" x2="626" y2="192" class="axis"/></svg>
+<p class="key">The headline metric: did the scenario exercise what it was written to
+exercise, with the antagonist it was written around?</p>
+
+<h3>Raw collision-occurrence rate</h3>
+<div class="legend"><span class="legend-item"><i style="background:var(--series-a)"></i>Scripted (behaviour tree)</span><span class="legend-item"><i style="background:var(--series-b)"></i>IDM policy</span></div>
+<svg viewBox="0 0 640 240" role="img" preserveAspectRatio="xMidYMid meet" class="chart"><line x1="54" y1="192.0" x2="626" y2="192.0" class="grid"/><text x="46" y="196.0" class="tick" text-anchor="end">0</text><line x1="54" y1="148.0" x2="626" y2="148.0" class="grid"/><text x="46" y="152.0" class="tick" text-anchor="end">25</text><line x1="54" y1="104.0" x2="626" y2="104.0" class="grid"/><text x="46" y="108.0" class="tick" text-anchor="end">50</text><line x1="54" y1="60.0" x2="626" y2="60.0" class="grid"/><text x="46" y="64.0" class="tick" text-anchor="end">75</text><line x1="54" y1="16.0" x2="626" y2="16.0" class="grid"/><text x="46" y="20.0" class="tick" text-anchor="end">100</text><text x="13" y="104.0" class="axis-label" text-anchor="middle" transform="rotate(-90 13 104.0)">% of runs</text><rect x="76.5" y="16.0" width="46.0" height="176.0" rx="2" fill="var(--series-a)"/><text x="99.5" y="11.0" class="barval" text-anchor="middle">100</text><rect x="128.5" y="16.0" width="46.0" height="176.0" rx="2" fill="var(--series-b)"/><text x="151.5" y="11.0" class="barval" text-anchor="middle">100</text><text x="125.5" y="212" class="cat" text-anchor="middle">red_light</text><rect x="219.5" y="16.0" width="46.0" height="176.0" rx="2" fill="var(--series-a)"/><text x="242.5" y="11.0" class="barval" text-anchor="middle">100</text><rect x="271.5" y="16.0" width="46.0" height="176.0" rx="2" fill="var(--series-b)"/><text x="294.5" y="11.0" class="barval" text-anchor="middle">100</text><text x="268.5" y="212" class="cat" text-anchor="middle">right_turn</text><rect x="362.5" y="16.0" width="46.0" height="176.0" rx="2" fill="var(--series-a)"/><text x="385.5" y="11.0" class="barval" text-anchor="middle">100</text><rect x="414.5" y="16.0" width="46.0" height="176.0" rx="2" fill="var(--series-b)"/><text x="437.5" y="11.0" class="barval" text-anchor="middle">100</text><text x="411.5" y="212" class="cat" text-anchor="middle">left_turn</text><rect x="505.5" y="192.0" width="46.0" height="0.8" rx="2" fill="var(--series-a)"/><text x="528.5" y="187.0" class="barval" text-anchor="middle">0</text><rect x="557.5" y="16.0" width="46.0" height="176.0" rx="2" fill="var(--series-b)"/><text x="580.5" y="11.0" class="barval" text-anchor="middle">100</text><text x="554.5" y="212" class="cat" text-anchor="middle">stop_sign</text><line x1="54" y1="192" x2="626" y2="192" class="axis"/></svg>
+<p class="key">The unrefined proxy. Compare against the chart above: where this one is
+higher, the ego was hit by something other than the scripted antagonist — the proxy
+passing for the wrong reason.</p>
+
+<h3>Median time to first contact</h3>
+<div class="legend"><span class="legend-item"><i style="background:var(--series-a)"></i>Scripted (behaviour tree)</span><span class="legend-item"><i style="background:var(--series-b)"></i>IDM policy</span></div>
+<svg viewBox="0 0 640 240" role="img" preserveAspectRatio="xMidYMid meet" class="chart"><line x1="54" y1="192.0" x2="626" y2="192.0" class="grid"/><text x="46" y="196.0" class="tick" text-anchor="end">0.0</text><line x1="54" y1="148.0" x2="626" y2="148.0" class="grid"/><text x="46" y="152.0" class="tick" text-anchor="end">3.0</text><line x1="54" y1="104.0" x2="626" y2="104.0" class="grid"/><text x="46" y="108.0" class="tick" text-anchor="end">6.1</text><line x1="54" y1="60.0" x2="626" y2="60.0" class="grid"/><text x="46" y="64.0" class="tick" text-anchor="end">9.1</text><line x1="54" y1="16.0" x2="626" y2="16.0" class="grid"/><text x="46" y="20.0" class="tick" text-anchor="end">12.1</text><text x="13" y="104.0" class="axis-label" text-anchor="middle" transform="rotate(-90 13 104.0)">seconds</text><rect x="76.5" y="91.1" width="46.0" height="100.9" rx="2" fill="var(--series-a)"/><text x="99.5" y="86.1" class="barval" text-anchor="middle">6.9</text><rect x="128.5" y="129.6" width="46.0" height="62.4" rx="2" fill="var(--series-b)"/><text x="151.5" y="124.6" class="barval" text-anchor="middle">4.3</text><text x="125.5" y="212" class="cat" text-anchor="middle">red_light</text><rect x="219.5" y="56.2" width="46.0" height="135.8" rx="2" fill="var(--series-a)"/><text x="242.5" y="51.2" class="barval" text-anchor="middle">9.3</text><rect x="271.5" y="104.9" width="46.0" height="87.1" rx="2" fill="var(--series-b)"/><text x="294.5" y="99.9" class="barval" text-anchor="middle">6.0</text><text x="268.5" y="212" class="cat" text-anchor="middle">right_turn</text><rect x="362.5" y="66.4" width="46.0" height="125.6" rx="2" fill="var(--series-a)"/><text x="385.5" y="61.4" class="barval" text-anchor="middle">8.6</text><rect x="414.5" y="54.8" width="46.0" height="137.2" rx="2" fill="var(--series-b)"/><text x="437.5" y="49.8" class="barval" text-anchor="middle">9.4</text><text x="411.5" y="212" class="cat" text-anchor="middle">left_turn</text><text x="528.5" y="186" class="na" text-anchor="middle">no hit</text><rect x="557.5" y="45.3" width="46.0" height="146.7" rx="2" fill="var(--series-b)"/><text x="580.5" y="40.3" class="barval" text-anchor="middle">10.1</text><text x="554.5" y="212" class="cat" text-anchor="middle">stop_sign</text><line x1="54" y1="192" x2="626" y2="192" class="axis"/></svg>
+<p class="key">Earlier contact under IDM is the signature of a collision that is not the
+scripted one — typically being rear-ended long before reaching the junction.</p>
+
+<h3>Mean ego speed</h3>
+<div class="legend"><span class="legend-item"><i style="background:var(--series-a)"></i>Scripted (behaviour tree)</span><span class="legend-item"><i style="background:var(--series-b)"></i>IDM policy</span></div>
+<svg viewBox="0 0 640 240" role="img" preserveAspectRatio="xMidYMid meet" class="chart"><line x1="54" y1="192.0" x2="626" y2="192.0" class="grid"/><text x="46" y="196.0" class="tick" text-anchor="end">0.0</text><line x1="54" y1="148.0" x2="626" y2="148.0" class="grid"/><text x="46" y="152.0" class="tick" text-anchor="end">2.4</text><line x1="54" y1="104.0" x2="626" y2="104.0" class="grid"/><text x="46" y="108.0" class="tick" text-anchor="end">4.9</text><line x1="54" y1="60.0" x2="626" y2="60.0" class="grid"/><text x="46" y="64.0" class="tick" text-anchor="end">7.3</text><line x1="54" y1="16.0" x2="626" y2="16.0" class="grid"/><text x="46" y="20.0" class="tick" text-anchor="end">9.7</text><text x="13" y="104.0" class="axis-label" text-anchor="middle" transform="rotate(-90 13 104.0)">m/s</text><rect x="76.5" y="45.3" width="46.0" height="146.7" rx="2" fill="var(--series-a)"/><text x="99.5" y="40.3" class="barval" text-anchor="middle">8.1</text><rect x="128.5" y="68.5" width="46.0" height="123.5" rx="2" fill="var(--series-b)"/><text x="151.5" y="63.5" class="barval" text-anchor="middle">6.8</text><text x="125.5" y="212" class="cat" text-anchor="middle">red_light</text><rect x="219.5" y="125.1" width="46.0" height="66.9" rx="2" fill="var(--series-a)"/><text x="242.5" y="120.1" class="barval" text-anchor="middle">3.7</text><rect x="271.5" y="68.8" width="46.0" height="123.2" rx="2" fill="var(--series-b)"/><text x="294.5" y="63.8" class="barval" text-anchor="middle">6.8</text><text x="268.5" y="212" class="cat" text-anchor="middle">right_turn</text><rect x="362.5" y="94.7" width="46.0" height="97.3" rx="2" fill="var(--series-a)"/><text x="385.5" y="89.7" class="barval" text-anchor="middle">5.4</text><rect x="414.5" y="150.7" width="46.0" height="41.3" rx="2" fill="var(--series-b)"/><text x="437.5" y="145.7" class="barval" text-anchor="middle">2.3</text><text x="411.5" y="212" class="cat" text-anchor="middle">left_turn</text><rect x="505.5" y="107.1" width="46.0" height="84.9" rx="2" fill="var(--series-a)"/><text x="528.5" y="102.1" class="barval" text-anchor="middle">4.7</text><rect x="557.5" y="63.2" width="46.0" height="128.8" rx="2" fill="var(--series-b)"/><text x="580.5" y="58.2" class="barval" text-anchor="middle">7.1</text><text x="554.5" y="212" class="cat" text-anchor="middle">stop_sign</text><line x1="54" y1="192" x2="626" y2="192" class="axis"/></svg>
+<p class="key">IDM is slower everywhere: it opens a following gap the scripted ego never
+kept, which is the mechanism behind most of the divergence.</p>
+
+<h2>Per-cell measurements</h2>
+<div class="scroll"><table class="data"><thead><tr><th>Scenario</th><th>Ego policy</th><th>Runs</th><th>Collision rate</th><th>Intended-conflict rate</th><th>Median first contact</th><th>Median peak impulse</th><th>Hit by (runs)</th><th>Mean speed</th></tr></thead><tbody><tr><td><code>red_light</code></td><td>scripted</td><td class="num">1</td><td class="num">100% (1/1)</td><td class="num">100% (1/1)</td><td class="num">6.95 s</td><td class="num">17,826</td><td>violator (1)</td><td class="num">8.11 m/s</td></tr><tr><td><code>red_light</code></td><td>idm</td><td class="num">1</td><td class="num">100% (1/1)</td><td class="num">0% (0/1)</td><td class="num">4.30 s</td><td class="num">2,480</td><td>follower (1)</td><td class="num">6.83 m/s</td></tr><tr><td><code>right_turn</code></td><td>scripted</td><td class="num">1</td><td class="num">100% (1/1)</td><td class="num">100% (1/1)</td><td class="num">9.35 s</td><td class="num">4,261</td><td>rear_ender (1)</td><td class="num">3.70 m/s</td></tr><tr><td><code>right_turn</code></td><td>idm</td><td class="num">1</td><td class="num">100% (1/1)</td><td class="num">0% (0/1)</td><td class="num">6.00 s</td><td class="num">4,793</td><td>adjacent_b (1)</td><td class="num">6.81 m/s</td></tr><tr><td><code>left_turn</code></td><td>scripted</td><td class="num">1</td><td class="num">100% (1/1)</td><td class="num">100% (1/1)</td><td class="num">8.65 s</td><td class="num">5,939</td><td>oncoming (1)</td><td class="num">5.38 m/s</td></tr><tr><td><code>left_turn</code></td><td>idm</td><td class="num">1</td><td class="num">100% (1/1)</td><td class="num">100% (1/1)</td><td class="num">9.45 s</td><td class="num">10,340</td><td>follower (1), oncoming (1)</td><td class="num">2.29 m/s</td></tr><tr><td><code>stop_sign</code></td><td>scripted</td><td class="num">1</td><td class="num">0% (0/1)</td><td class="num">100% (1/1)</td><td class="num">—</td><td class="num">—</td><td>—</td><td class="num">4.69 m/s</td></tr><tr><td><code>stop_sign</code></td><td>idm</td><td class="num">1</td><td class="num">100% (1/1)</td><td class="num">0% (0/1)</td><td class="num">10.10 s</td><td class="num">6,346</td><td>crosser (1)</td><td class="num">7.12 m/s</td></tr></tbody></table></div>
+<p class="key">Event counts are contact reports per physics substep, so they measure how
+long bodies stayed in contact as much as how many distinct impacts occurred; contact
+time, peak impulse and partner identity are the meaningful columns.</p>
+
+<h2>Measurement notes</h2>
+<ul>
+<li><b>Repeatability.</b> Every cell above was unanimous across its 20 repeats — 20/20 or
+0/20, never a split — so within this configuration the outcomes are repeatable and the
+rates are not hiding variance. One earlier <em>video-recording</em> run of
+<code>left_turn</code> scripted did produce no collision; it came from the session in
+which the CARLA server later crashed, and it did not reproduce in 20 clean repeats. Treat
+marginal conflicts as worth re-running rather than trusting a single sample.</li>
+<li><b>Instrumentation is excluded.</b> The benchmark scenarios place a ground-decal
+marker at each conflict point as a distance reference. CARLA does occasionally report a
+contact when the ego drives over it (6 of these 160 runs, all in
+<code>left_turn</code> under IDM), so the metric counts only vehicle-versus-vehicle
+contacts; static-prop contacts are recorded separately as
+<code>n_static_contacts</code>. Counting them would let a clean run register as a
+crash.</li>
+<li><b>The NPCs have no driver model.</b> <code>drive()</code> is a waypoint+PID
+controller that never yields and never brakes for anything. Any ego that deviates from
+the scripted timing therefore risks being rear-ended by its own scripted follower — which
+is exactly what happens in <code>red_light</code> under IDM. That is a property of the
+benchmark, not a defect in IDM, and it is the single biggest caveat on these numbers.</li>
+<li><b>Lateral control is shared.</b> IDM is longitudinal only; steering reuses the same
+pure-pursuit rule as the compiled <code>drive()</code>, so both arms follow the identical
+route through each junction and the comparison isolates the longitudinal policy.</li>
+</ul>
+
+<h2>Reproducing</h2>
+<pre><code>./experiments/run_experiments.sh                                    # 8 recorded runs
+REPEATS=20 ./experiments/run_experiments.sh results/repeats --no-video
+python experiments/make_report.py                                   # rebuild this page</code></pre>
+<p class="key">Requires a CARLA 0.9.16 server on port 2000 and the cp38 interpreter; the
+runner refuses to start on a Python that cannot import CARLA. A no-video run takes ~6 s,
+so the repeat sweep is cheap; recording video is what costs time.</p>
+</div>

@@ -250,6 +250,74 @@ backend".
 
 ---
 
+## Construct provenance: what the paper actually sanctions
+
+Every construct the benchmark scenarios use, and where the paper puts it.
+"L1/L2/L3" are Listings 1–3 (the `hello_world` case study); "T2" is Table 2's
+capability checklist.
+
+| Construct | Paper | Where |
+|---|---|---|
+| `serial` / `parallel` / `one_of` | ✓ | T2 *Scenario Composition*; L2/L3 |
+| `wait @EVENT` / `emit EVENT` | ✓ | T2 *Conditional triggers*; L2 line 80, L3 line 126 |
+| `wait elapsed(t)` | ✓ | T2 *Temporal modifiers*; L2 line 73 |
+| `rise(...)` / `fall(...)` | ✓ | T2 *Condition & Expression*; L2 lines 61, 89 |
+| `drive()` + `speed(...)` | ✓ | T2 *Move/drive/walk*; L2 line 59 |
+| `speed(v, rate_profile:)` | ✓ | L3 line 120 |
+| `keep_lane()` | ✓ | T2 *Spatial Modifiers* — added for this pass, see below |
+| `change_speed(target:, rate_profile:)` | ✓ | T2 *Speed control*; L2 line 84 |
+| `change_lane(num_of_lanes:, side:)` | ✓ | T2 *Lateral modifier*; L2 line 67 |
+| `assign_position()` + `position(x,y,z,h)` | ✓ | T2 *Assign position/orientation*; L1 line 49 |
+| `position(distance:, ahead_of:/behind:)` | ✓ | T2 *Relative modifiers*, *Space gap*; L1 line 45 |
+| `set_lights(mode:)` | ✓ | L1 line 37, L2 lines 72–74 |
+| `assign_celestial_position(azimuth:, elevation:)` | ✓ | L1 line 36 |
+| `object_distance(reference:, direction:)` | ✓ | L3 line 122 |
+| `position.ahead_of(other)` | ✓ | L2 line 61, L3 line 106 |
+| `actor.speed < literal` | ✓ | L2 line 93 |
+| `keep(it.field == literal)` | ✓ | L1 lines 7–22 |
+| `stationary_object` | ✓ | L1 line 20 |
+| **`ram(target:)`** | **✗** | **nowhere — removed** |
+
+`ram` was the single exception, and it is gone from every file under
+`scenarios/benchmark/` and `scenarios/local/benchmark/`. Table 2 does sanction
+*adding* actions (*Extensibility → Custom actions → MethodRegistry
+decorators*), so registering one was not itself a departure — but the action
+is not part of the paper's own vocabulary, and every adversarial outcome in
+the benchmark rested on it.
+
+**What replaced it.** Nothing, in the sense that no new action was needed. The
+striking vehicle keeps executing `drive()` on its own lane at its own declared
+speed. This baseline's `drive()` is a waypoint+PID controller with no
+car-following, no yielding and no collision-avoidance term, so a vehicle that
+does not change what it is doing is a vehicle that does not give way. The
+conflict is produced by geometry and timing; the `emit`/`wait` handshakes still
+mark the phases. Two consequences, both honest:
+
+- Impacts are softer. `ram` applied full throttle regardless of the declared
+  speed, so it accelerated a 19 kph car to ~50 kph. Now the declared speed is
+  the actual speed, and `left_turn`'s peak impulse falls from ~19500 to ~5900.
+- Timing matters more. The striking vehicle has to *be* somewhere at the right
+  moment rather than homing in, so each scenario's approach distances were
+  re-tuned against the local backend.
+
+### `keep_lane`, added for this pass
+
+Table 2 lists `keep_lane` under *Spatial Modifiers* and this baseline did not
+implement it. It is needed once `ram` is gone: `drive()` calls
+`get_waypoint()` fresh every tick, so a vehicle that leaves a junction
+carrying lateral error is captured by whichever lane is nearest — and a right
+turn leaves ~2 m of it, more than half a lane. `ram` hid this by homing on the
+target's actual position.
+
+`drive() with: keep_lane()` latches the first ordinary lane the leaf sees and
+steers to that lane's centreline, re-latching on the way out of a junction
+(the connector decides which lane you emerge in; you then hold it). It is
+implemented in `WaypointFollowerLite._hold_lane` using only `lane_id`,
+`is_junction` and `get_left_lane()`/`get_right_lane()`, so it works unchanged
+on both backends.
+
+---
+
 ## What is implemented vs. not (relative to the paper)
 
 The paper's Table 2 claims broad coverage. This baseline implements the

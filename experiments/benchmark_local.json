@@ -2,10 +2,24 @@
   "description": "Ego-policy swap experiment over scenarios/local/benchmark, run on the bundled local simulator (--backend pygame) instead of CARLA. Each scenario is run twice: once as compiled (the ego driven by its behaviour-tree timeline) and once with the ego's actuation handed to the IDM policy through the --ego-policy entry point. Everything else -- NPC timelines, events, monitors, spawn geometry -- is identical between the two arms, exactly as in benchmark.json.",
   "relationship_to_benchmark_json": "These are ports, not the same runs. The .osc files stage the same four natural-language scenarios at the centre junction (80, 80) of the synthesised `grid` town rather than at Town10HD_Opt junctions 189/841/134. Absolute numbers are therefore not comparable with benchmark.json; the intended OUTCOME per scenario is, and that is what expect_collision encodes. See the header comment of each .osc for the per-scenario differences.",
   "town": "grid",
-  "junction": [80.0, 80.0],
+  "junction": [
+    80.0,
+    80.0
+  ],
   "policies": [
-    {"id": "scripted", "cli": [], "label": "Scripted (behaviour tree)"},
-    {"id": "idm", "cli": ["--ego-policy", "idm"], "label": "IDM policy"}
+    {
+      "id": "scripted",
+      "cli": [],
+      "label": "Scripted (behaviour tree)"
+    },
+    {
+      "id": "idm",
+      "cli": [
+        "--ego-policy",
+        "idm"
+      ],
+      "label": "IDM policy"
+    }
   ],
   "idm_parameters": {
     "v0": 8.333,
@@ -24,7 +38,10 @@
       "intent": "A vehicle running the crossing red T-bones the ego inside the junction.",
       "expect_collision": true,
       "intended_partner": "violator",
-      "observed_scripted": {"first_collision_time": 6.95, "peak_impulse": 17792}
+      "observed_scripted": {
+        "first_collision_time": 6.95,
+        "peak_impulse": 17826
+      }
     },
     {
       "name": "right_turn",
@@ -33,7 +50,10 @@
       "intent": "A vehicle already on the lane the ego turns onto rear-ends it.",
       "expect_collision": true,
       "intended_partner": "rear_ender",
-      "observed_scripted": {"first_collision_time": 13.80, "peak_impulse": 12449}
+      "observed_scripted": {
+        "first_collision_time": 9.35,
+        "peak_impulse": 4261
+      }
     },
     {
       "name": "left_turn",
@@ -42,7 +62,10 @@
       "intent": "An oncoming vehicle strikes the ego mid unprotected-left-turn.",
       "expect_collision": true,
       "intended_partner": "oncoming",
-      "observed_scripted": {"first_collision_time": 9.00, "peak_impulse": 11431}
+      "observed_scripted": {
+        "first_collision_time": 8.65,
+        "peak_impulse": 5939
+      }
     },
     {
       "name": "stop_sign",
@@ -51,8 +74,13 @@
       "intent": "The ego negotiates an unsignalised crossing by precedence and nothing is hit.",
       "expect_collision": false,
       "intended_partner": null,
-      "observed_scripted": {"first_collision_time": null, "peak_impulse": 0}
+      "observed_scripted": {
+        "first_collision_time": null,
+        "peak_impulse": 0
+      }
     }
   ],
-  "junction_turn_note": "drive() follows waypoint.next()[0], so which way a vehicle goes through a junction is a property of the lane it is on. --junction-turn sets the map-wide preference and the town's lane-pairing rule supplies the per-actor difference: a left turn is connected only from the innermost lane and a right turn only between outermost lanes, so a vehicle on the other lane has no such connector and goes straight. Each scenario's header comment states which actor is on which lane and why."
+  "junction_turn_note": "drive() follows waypoint.next()[0], so which way a vehicle goes through a junction is a property of the lane it is on. --junction-turn sets the map-wide preference and the town's lane-pairing rule supplies the per-actor difference: a left turn is connected only from the innermost lane and a right turn only between outermost lanes, so a vehicle on the other lane has no such connector and goes straight. Each scenario's header comment states which actor is on which lane and why.",
+  "construct_vocabulary": "These scenarios use only constructs the paper documents -- Table 2's capability checklist and Listings 1-3 of the hello_world case study. ram(target:) has been removed: it appears nowhere in the paper, and every adversarial outcome here previously depended on it. The striking vehicle now keeps executing drive() on its own lane at its own declared speed; drive() has no car-following, yielding or collision-avoidance term, so not changing what you are doing IS failing to give way. See PIPELINE_WALKTHROUGH.md, 'Construct provenance'.",
+  "impulse_note": "Peak impulses are lower than the CARLA benchmark's and lower than this suite's own earlier ram-based runs. ram applied full throttle regardless of the declared speed; without it the declared speed is the actual speed, so left_turn falls from ~19500 to ~5900 and right_turn from ~12400 to ~4300. collision_occurred and the intended partner are unchanged, and those are what expect_collision and intended_partner test."
 }

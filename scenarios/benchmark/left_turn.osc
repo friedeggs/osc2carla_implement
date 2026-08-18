@@ -63,6 +63,19 @@ import "domain.osc"
 # turn is therefore selected by choosing the approach lane.  "Unprotected" here
 # means what it always means -- the turn crosses a lane the ego does not have
 # priority on -- and does not depend on a signal phase.
+#
+# ------------------------------------------------------------------------
+# UNVERIFIED ON CARLA.  ram(target: ego) has been removed from this file: it
+# is not an OSC2Runner construct -- it appears nowhere in the paper, whose
+# action vocabulary (Table 2, Listings 1-3) has no pursuit primitive.  The
+# substitution is mechanically sound but its TIMING has not been run against
+# CARLA, because no server is available where this edit was made.  The
+# recorded results in experiments/results/ correspond to the ram version of
+# this file, not to this one.  Re-tune and re-record before quoting numbers;
+# the knob is v_oncoming, which ram used to override by accelerating the
+# vehicle to full throttle; the declared speed is now the actual speed, so
+# it will need to be raised for the strike to land while the ego is mid-arc.
+# ------------------------------------------------------------------------
 scenario left_turn:
     carla_map: map with:
         keep(it.map_file == "Town10HD_Opt")
@@ -195,9 +208,14 @@ scenario left_turn:
                 wait @EGO_TURNING
 
             # Holds its line into the turning ego rather than yielding.
+            # Literally: it keeps driving its own lane at its own speed, and
+            # drive() has no yielding term, so a vehicle that does not change
+            # what it is doing is a vehicle that does not give way.
             emit ONCOMING_HELD_LINE
             one_of:
-                oncoming.ram(target: ego)
+                oncoming.drive() with:
+                    speed(v_oncoming)
+                    keep_lane()
                 wait elapsed(13s)
 
         serial:

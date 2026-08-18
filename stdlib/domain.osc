@@ -45,4 +45,5 @@ action environment.assign_celestial_position
 modifier speed
 modifier position
 modifier lane
+modifier keep_lane
 modifier acceleration

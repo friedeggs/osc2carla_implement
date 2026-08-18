@@ -64,13 +64,25 @@ import "domain.osc"
 # being a property of the approach lane rather than anything the scenario can
 # request.
 #
-# Modelling note: ram(target: ego) is what makes the rear-end deterministic.
-# This baseline has no car-following or braking driver model -- drive() is a
-# waypoint+PID controller that neither sees other vehicles nor yields -- so
-# "the driver behind failed to brake" is expressed as the switch from lane
-# following to ram once the ego is established in the lane ahead.  The impact
-# geometry (in-lane, from directly behind) is what makes it a rear-end rather
-# than the side impact in red_light.osc.
+# Modelling note: this baseline has no car-following or braking driver model
+# -- drive() is a waypoint+PID controller that neither sees other vehicles nor
+# yields -- so "the driver behind failed to brake" needs no action at all.  It
+# is expressed by rear_ender simply continuing to drive its lane at v_rear
+# while the ego is slow in front of it, with keep_lane() holding it in that
+# lane.  The impact geometry (in-lane, from directly behind) is what makes it
+# a rear-end rather than the side impact in red_light.osc.
+#
+# ------------------------------------------------------------------------
+# UNVERIFIED ON CARLA.  ram(target: ego) has been removed from this file: it
+# is not an OSC2Runner construct -- it appears nowhere in the paper, whose
+# action vocabulary (Table 2, Listings 1-3) has no pursuit primitive.  The
+# substitution is mechanically sound but its TIMING has not been run against
+# CARLA, because no server is available where this edit was made.  The
+# recorded results in experiments/results/ correspond to the ram version of
+# this file, not to this one.  Re-tune and re-record before quoting numbers;
+# the knob is v_rear against v_exit -- the rear-end now depends on the
+# declared closing speed rather than on full throttle.
+# ------------------------------------------------------------------------
 scenario right_turn:
     carla_map: map with:
         keep(it.map_file == "Town10HD_Opt")
@@ -182,10 +194,18 @@ scenario right_turn:
                     speed(v_rear)
                 wait @EGO_MERGED
 
-            # The ego is now in the lane ahead. No brake application.
+            # The ego is now in the lane ahead, still slow from the corner.
+            # What makes this a rear-end is precisely what is ABSENT here: no
+            # change_speed, no brake, no yielding term in drive().  The
+            # vehicle simply carries on into the space the ego occupies.
+            # rear_ender is already established on the destination lane and
+            # junction 841 was chosen so its movement is straight-through, so
+            # no homing is needed to keep it there -- keep_lane() holds it.
             emit REAR_ENDER_COMMITTED
             one_of:
-                rear_ender.ram(target: ego)
+                rear_ender.drive() with:
+                    speed(v_rear)
+                    keep_lane()
                 wait elapsed(15s)
 
         # ---- Background: inner eastbound lane, straight through ----

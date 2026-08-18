@@ -65,6 +65,18 @@ import "domain.osc"
 # is therefore expressed as behaviour and geometry: the violator enters the
 # conflict area at speed on the ego's crossing phase and never yields, while
 # the stopper on the same approach halts at the line.
+#
+# ------------------------------------------------------------------------
+# UNVERIFIED ON CARLA.  ram(target: ego) has been removed from this file: it
+# is not an OSC2Runner construct -- it appears nowhere in the paper, whose
+# action vocabulary (Table 2, Listings 1-3) has no pursuit primitive.  The
+# substitution is mechanically sound but its TIMING has not been run against
+# CARLA, because no server is available where this edit was made.  The
+# recorded results in experiments/results/ correspond to the ram version of
+# this file, not to this one.  Re-tune and re-record before quoting numbers;
+# the knob is v_violator / the violator's spawn y, which set when it
+# reaches the conflict point relative to the ego.
+# ------------------------------------------------------------------------
 scenario red_light:
     carla_map: map with:
         keep(it.map_file == "Town10HD_Opt")
@@ -116,6 +128,8 @@ scenario red_light:
     var v_lead: speed = v_ego + 4kph
     var v_follower: speed = v_ego - 2kph
     var v_violator: speed = 32kph
+    # Speed it accelerates to once it has committed to the red.
+    var v_violator_run: speed = v_violator + 8kph
     var v_stopper: speed = 30kph
 
     # --- Distances ---
@@ -203,10 +217,16 @@ scenario red_light:
                     speed(v_violator)
                 wait @EGO_AT_CONFLICT_POINT
 
-            # Phase 2: enter on the red and strike the ego's side.
+            # Phase 2: enter on the red.  It does not brake and it does
+            # not yield -- it accelerates to beat the phase and holds its own
+            # lane through the box, which puts it across the ego's path.
+            # drive() has no yielding term, so "runs the red" needs no
+            # special action: it is the absence of the stopper's braking.
             emit RED_LIGHT_RUN
             one_of:
-                violator.ram(target: ego)
+                violator.drive() with:
+                    speed(v_violator_run)
+                    keep_lane()
                 wait elapsed(11s)
 
         # ---- STOPPER: same approach, obeys the red at the stop line ----

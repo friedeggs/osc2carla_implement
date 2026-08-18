@@ -6,7 +6,7 @@ import "domain.osc"
 #   python -m osc2carla scenarios/local/benchmark/left_turn.osc \
 #       --backend pygame --town grid --junction-turn left --sim-duration 20
 #
-# Same natural-language scenario as the CARLA original:
+# Natural-language scenario, unchanged from the CARLA original:
 #
 #   The ego makes an unprotected left turn at an intersection with background
 #   traffic in both directions.  A car ahead of it completes the same turn in a
@@ -15,7 +15,7 @@ import "domain.osc"
 #   lane -- hits it while it is turning across.
 #
 # Stage geometry -- centre junction of the `grid` town, centre (80, 80), box
-# x in [73, 87], y in [73, 87]:
+# x in [69, 91], y in [69, 91]:
 #
 #      ego, lead_turner, follower --->  y = 81.75 eastbound, lane -1
 #      ==============================[ (80, 80) ]==============================
@@ -29,41 +29,47 @@ import "domain.osc"
 #     oncoming lane.  The classic unprotected-left conflict -- the ego has to
 #     cross a lane it does not have priority on.
 #
-# Routing.  This baseline's drive() follows next()[0], so which way a vehicle
-# goes through a junction is a property of the lane it is on, not of anything
-# the scenario can request.  On the local backend --junction-turn selects the
-# preference, and the town's lane-pairing rule does the rest: a left turn is
-# only connected from the INNERMOST lane, exactly as on a real road.  That is
-# what lets one scenario mix manoeuvres under a single global preference:
+# Routing.  drive() follows next()[0], so which way a vehicle goes through a
+# junction is a property of the lane it is on.  --junction-turn selects the
+# map-wide preference and the town's lane-pairing rule supplies the per-actor
+# difference: a left turn is connected only from the INNERMOST lane, exactly
+# as on a real road.  That is what lets one scenario mix manoeuvres:
 #
 #   * ego, lead_turner, follower  -> eastbound lane -1 (inner)  -> turn left
+#   * oncoming                    -> westbound lane +1 (inner)  -> would turn,
+#                                    but never reaches the box before the
+#                                    conflict; it is timed to arrive as the
+#                                    ego crosses its lane
 #   * oncoming_b                  -> westbound lane +2 (outer)  -> no left
 #                                    connector exists, so it goes straight
-#   * oncoming                    -> westbound lane +1 (inner). It would turn
-#                                    left, but ram(target: ego) takes over
-#                                    before it reaches the box, as it does in
-#                                    the CARLA original.
 #
-# Actors, unchanged from the original (5 vehicles + 1 reference marker):
-#   ego, lead_turner and follower turning left; oncoming and oncoming_b on the
-#   opposing carriageway.
+# How the failure to yield is expressed.  The CARLA original switched the
+# oncoming vehicle to ram(target: ego) on @EGO_TURNING.  ram is not an
+# OSC2Runner construct -- it appears nowhere in the paper -- so "holds its
+# line" is now literal: it keeps driving its own lane at its own speed with
+# keep_lane(), and drive() has no yielding term.  A vehicle that does not
+# change what it is doing is a vehicle that does not give way, which is the
+# entire content of an unprotected-left conflict.
 #
 # Differences from the CARLA original:
+#   * v_oncoming is 28 kph rather than 19.  ram used to accelerate the
+#     striking vehicle to ~50 kph regardless of its declared speed; without
+#     it, the declared speed is the speed, and it has to be high enough to
+#     reach the conflict point while the ego is still mid-arc.
 #   * oncoming_b is placed absolutely on the outer lane rather than 12 m
 #     behind oncoming, because its lane assignment is what keeps it going
 #     straight through the junction (see Routing above).
-#   * approach distances differ: a grid arm is 66 m, so the ego starts 49 m
-#     short of the junction mouth rather than the original's 40 m from a much
-#     larger junction. oncoming starts 64 m from the conflict point rather
-#     than the original's 27 m, because ram() accelerates it to ~50 kph and an
-#     earlier arrival meets the ego at the junction mouth, before it has
-#     started to turn -- the failure mode the original file warns about.
+#   * follow_gap is 20 m and v_follower 22 kph, up from 14 m and 26 kph. The
+#     ego slows to v_turn for the corner and drive() has no car-following
+#     model, so a closer or faster follower rear-ends the ego before the
+#     oncoming vehicle arrives and takes the intended partner slot.
 #
 # Expected on the local backend: collision_occurred = true, first contact at
-# t = 9.1 s, peak impulse ~19500, the sole partner being oncoming, striking an
-# ego that is visibly mid-arc inside the junction. The conflict-point decal
-# also registers ~60 static contacts as vehicles drive over it; those are
-# reported separately and excluded from the collision verdict.
+# t = 8.65 s, peak impulse ~5900, sole partner oncoming, striking an ego that
+# is visibly mid-arc inside the junction. The conflict-point decal also
+# registers static contacts as vehicles drive over it; those are reported
+# separately and excluded from the collision verdict.
+
 scenario left_turn:
     carla_map: map with:
         keep(it.map_file == "grid")
@@ -111,17 +117,17 @@ scenario left_turn:
     # slow-down is commanded explicitly.
     var v_turn: speed = 18kph
     var v_lead: speed = 30kph
-    var v_follower: speed = 26kph
+    var v_follower: speed = 22kph
     # Tuned so oncoming is still short of the conflict point when the ego
     # commits, rather than already past it. Faster than this and it reaches
     # the crossing first, then homes BACK onto an ego that has not started
     # turning yet -- which lands as a head-on at the junction mouth instead of
     # a strike on a car mid-arc.
-    var v_oncoming: speed = 19kph
+    var v_oncoming: speed = 28kph
 
     # --- Distances ---
     var lead_gap: length = 22m
-    var follow_gap: length = 14m
+    var follow_gap: length = 20m
 
     # The ego commits to the turn this far from the conflict point.
     var commit_radius: length = 14m
@@ -135,7 +141,7 @@ scenario left_turn:
         # ---- EGO: unprotected left across the oncoming carriageway ----
         serial:
             ego.assign_position() with:
-                position(x: 26.00, y: 81.75, z: 0.00, h: 0.0rad, at: start)
+                position(x: 32.00, y: 81.75, z: 0.00, h: 0.0rad, at: start)
                 speed(0kph, at: start)
 
             wait @go_signal
@@ -194,9 +200,16 @@ scenario left_turn:
                 wait @EGO_TURNING
 
             # Holds its line into the turning ego rather than yielding.
+            # Literally: it keeps driving its own lane at its own speed. This
+            # baseline's drive() has no yielding or collision-avoidance term,
+            # so a vehicle that does not change what it is doing is a vehicle
+            # that does not give way -- which is the whole content of an
+            # unprotected-left conflict.
             emit ONCOMING_HELD_LINE
             one_of:
-                oncoming.ram(target: ego)
+                oncoming.drive() with:
+                    speed(v_oncoming)
+                    keep_lane()
                 wait elapsed(13s)
 
         # ---- ONCOMING_B: outer lane, straight through ----

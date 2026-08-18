@@ -1,78 +1,64 @@
 import "domain.osc"
 
-# Right turn out of a side road, rear-ended by traffic already on the lane the
-# ego turns onto -- LOCAL SIMULATOR port of scenarios/benchmark/right_turn.osc.
+# Right turn out of a side road, rear-ended by a vehicle that does not slow
+# for it -- LOCAL SIMULATOR port of scenarios/benchmark/right_turn.osc.
 #
 #   python -m osc2carla scenarios/local/benchmark/right_turn.osc \
 #       --backend pygame --town grid --junction-turn right --sim-duration 24
 #
-# Same natural-language scenario as the CARLA original:
+# Natural-language scenario:
 #
 #   The ego turns right out of the minor arm of an intersection onto a busier
-#   road, against background traffic in both directions.  It is still slow from
-#   the corner when it settles into its new lane.  A vehicle already travelling
-#   on that lane arrives from behind and, instead of braking for the car that
-#   has just pulled out in front of it, runs into the back of it.
+#   road, against background traffic in both directions.  It is still slow
+#   from the corner when it settles into its new lane.  The vehicle behind it
+#   never slowed for the corner and, instead of braking for the car in front,
+#   runs into the back of it.
 #
 # Stage geometry -- centre junction of the `grid` town, centre (80, 80), box
-# x in [73, 87], y in [73, 87]:
+# x in [69, 91], y in [69, 91]:
 #
-#                                 |  x = 74.75 southbound (+y), lane -2
-#                                 v  the ego comes down the north arm
-#   merge_point (60, 74.75)  [ JUNCTION (80, 80) ]  <--- rear_ender, x = 148
+#                   ego, then rear_ender 35 m back
+#                            |  x = 74.75 southbound (+y), lane -2
+#                            v
+#   merge_point (60, 74.75)  [ JUNCTION (80, 80) ]
 #   =========================================================================
 #   y = 74.75 westbound, lane +2   <--- destination lane
 #   y = 78.25 westbound, lane +1   <--- adjacent_a, adjacent_b, straight
 #   -------------------------------------------------------------------------
 #   y = 81.75 eastbound, lane -1   ---> opposing
 #
-# Routing.  Under --junction-turn right the town's lane-pairing rule connects
-# a right turn only from the OUTERMOST lane to the outermost lane, as on a
-# real road, which is what lets this scenario mix manoeuvres:
+# Difference from the CARLA original, and why.  In the original, rear_ender is
+# already travelling on the destination lane and arrives from behind the
+# merge.  That cannot be staged here.  --junction-turn is a whole-map
+# preference, and the town connects a right turn only between OUTERMOST lanes,
+# so the ego must be on the outer lane to turn at all -- while a vehicle
+# approaching on the destination lane from the east would take the same right
+# turn rather than continuing straight.  The original papered over this with
+# ram(target: ego), which homes on the ego regardless of lane; ram is not an
+# OSC2Runner construct (it appears nowhere in the paper), so it is gone.
 #
-#   * ego                  -> southbound lane -2 (outer) -> turns right
-#   * adjacent_a/b         -> westbound lane +1 (inner)  -> no right connector
-#                             exists from an inner lane, so they go straight
-#   * opposing             -> eastbound lane -1 (inner)  -> straight
-#   * rear_ender           -> westbound lane +2 (outer). It would turn right,
-#                             but ram(target: ego) takes over once the ego is
-#                             established in the lane ahead -- before it
-#                             reaches the box -- exactly as in the original.
+# rear_ender therefore queues behind the ego on the same approach and takes
+# the same right turn.  The conflict is unchanged in kind -- a vehicle that
+# does not slow, running into the back of one that did, in-lane and from
+# directly behind -- and it is now produced entirely by geometry and speed
+# rather than by a homing controller.  It is also more robust: the striking
+# vehicle is directly behind the ego on the same path, so there is no timing
+# knife-edge.
 #
-# Differences from the CARLA original:
-#   * the merge point sits 13 m WEST of the junction exit, at (60, 74.75),
-#     rather than at the exit itself.  This junction box is 14 m across, so a
-#     marker at the exit is within merge_radius of the ego while it is still
-#     on its approach down the north arm, and EGO_MERGED would fire before the
-#     ego had turned at all.  Moving it down the destination lane makes the
-#     condition mean what it says.
-#   * corner_radius is 22 m rather than 18 m, following the merge point.
-#   * v_turn is 12 kph rather than 16 kph, and v_rear 20 kph rather than 30.
-#     Both follow from the corner, below.
-#   * background traffic on the inner westbound lane starts 30 m closer, so it
-#     has cleared the junction before the ego comes out of the corner rather
-#     than being beside it at that moment.
+# The corner.  The right-turn connector is the tightest manoeuvre this town
+# offers.  The pure-pursuit controller comes out of it carrying ~2 m of
+# lateral error, more than half a lane, and drive() re-projects onto the
+# nearest lane every tick -- so without help the ego finishes one lane inboard
+# of the connector's exit.  keep_lane() (Table 2, Spatial Modifiers) fixes
+# this: the leaf latches the lane the connector fed it into and holds it.
+# Both the ego and rear_ender use it, which is why they finish on y = 74.75.
 #
-# The corner, and what it costs.  Even with the junction's clear area (see
-# GridTown.junction_margin) the right-turn connector is the tightest
-# manoeuvre this town offers: ~9.6 m of arc against the bicycle model's
-# ~4.5 m minimum turning radius.  The pure-pursuit controller tracks it, but
-# comes out of it carrying ~2 m of lateral error, and its lookahead of 5 m
-# closes that error more slowly than the 3.5 m lane spacing.  drive() calls
-# get_waypoint() fresh every tick, so once the error exceeds half a lane the
-# ego projects onto the INNER westbound lane and settles there instead of the
-# outer one the connector fed it into.
-#
-# That is a controller artefact, not a scenario feature, and it is worth
-# knowing when reading the run: the ego does turn right, is rear-ended in-lane
-# from directly behind, and the metric is the intended one -- but it finishes
-# one lane inboard of the connector's nominal exit.  rear_ender starts on the
-# nominal exit lane and follows the ego across under ram(), so the impact
-# geometry is unaffected.
-#
-# Expected on the local backend: collision_occurred = true, first contact at
-# t = 13.8 s, peak impulse ~12400, sole partner rear_ender, in-lane from
-# directly behind.
+# Expected on the local backend: collision_occurred = true, EGO_MERGED at
+# t = 8.95 s, first contact at t = 9.35 s, peak impulse ~4300, sole partner
+# rear_ender.  The impulse is far below the CARLA original's ~18600 because
+# nothing here is at full throttle: it is a 26 kph vehicle running into a
+# 14 kph one, which is what the declared speeds say should happen.
+
 scenario right_turn:
     carla_map: map with:
         keep(it.map_file == "grid")
@@ -120,13 +106,15 @@ scenario right_turn:
     # enough for rear_ender to run into.
     var v_turn: speed = 12kph
     # A car that has just come round a corner is still slow.
-    var v_exit: speed = 20kph
-    var v_rear: speed = 20kph
+    var v_exit: speed = 14kph
+    var v_rear: speed = 26kph
     var v_adjacent: speed = 28kph
     var v_opposing: speed = 25kph
 
     # --- Distances ---
-    var adjacent_gap: length = 20m
+    var adjacent_gap: length = 12m
+    # How far back rear_ender starts on the same approach.
+    var rear_gap: length = 35m
     # The ego commits to the corner this far from the merge point.
     var corner_radius: length = 22m
     # ...and counts as established in the destination lane inside this one.
@@ -141,7 +129,7 @@ scenario right_turn:
         # ---- EGO: right turn out of the minor arm ----
         serial:
             ego.assign_position() with:
-                position(x: 74.75, y: 45.00, z: 0.00, h: 1.5708rad, at: start)
+                position(x: 74.75, y: 50.00, z: 0.00, h: 1.5708rad, at: start)
                 speed(0kph, at: start)
 
             wait @go_signal
@@ -163,30 +151,37 @@ scenario right_turn:
                 wait @EGO_MERGED
 
             # Straighten up and pull away -- or would, if rear_ender were not
-            # already closing on it.
+            # already closing on it.  keep_lane() latches the lane the corner
+            # fed it into and holds it, instead of letting the residual
+            # lateral error from the arc hand the ego to the neighbouring
+            # lane on the next get_waypoint() call.
             one_of:
                 ego.drive() with:
                     speed(v_exit)
+                    keep_lane()
                 wait elapsed(15s)
 
-        # ---- REAR_ENDER: already on the destination lane, does not brake ----
+        # ---- REAR_ENDER: queued behind the ego, does not brake ----
         serial:
             rear_ender.assign_position() with:
-                position(x: 148.00, y: 74.75, z: 0.00, h: 3.1416rad, at: start)
+                position(distance: rear_gap, behind: ego, at: start)
                 speed(0kph, at: start)
 
             wait @go_signal
 
+            # One speed, one lane, the whole way: it never slows for the
+            # corner and it never brakes for the car that pulls out in front
+            # of it.  What makes this a rear-end is precisely what is ABSENT
+            # -- no change_speed, no yielding term in drive() -- so the
+            # vehicle carries on into the space the ego occupies.  A single
+            # uninterrupted leaf also lets keep_lane() re-latch on the way
+            # out of the junction and hold the ego's lane rather than
+            # wandering into the neighbouring one.
             one_of:
                 rear_ender.drive() with:
                     speed(v_rear)
-                wait @EGO_MERGED
-
-            # The ego is now in the lane ahead. No brake application.
-            emit REAR_ENDER_COMMITTED
-            one_of:
-                rear_ender.ram(target: ego)
-                wait elapsed(15s)
+                    keep_lane()
+                wait elapsed(21s)
 
         # ---- Background: inner westbound lane, straight through ----
         serial:
@@ -231,6 +226,11 @@ scenario right_turn:
             wait @go_signal
             wait rise(ego.object_distance(reference: merge_point, direction: euclidean) < merge_radius)
             emit EGO_MERGED
+
+        # ---- Monitor: the moment the rear-end becomes unavoidable ----
+        serial:
+            wait @EGO_MERGED
+            emit REAR_ENDER_COMMITTED
 
         # ---- Termination guard ----
         wait elapsed(24s)
