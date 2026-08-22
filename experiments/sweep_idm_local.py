@@ -15,8 +15,9 @@ The distribution that does exist is over the *policy*. IDM has six parameters,
 and the question the benchmark asks -- does swapping the ego's controller still
 produce the scenario's intended outcome? -- has an answer that depends on them.
 This script samples that space with a Latin hypercube (stratified on every
-axis, so a modest N still covers each parameter's range) and runs all four
-scenarios at each sample.
+axis, so a modest N still covers each parameter's range) and runs every
+scenario in the config at each sample -- the four junction ones and the three
+highway ones.
 
 The scripted arm has no parameters, so it stays a single deterministic run per
 scenario. It is a reference point, not a distribution, and the report says so.

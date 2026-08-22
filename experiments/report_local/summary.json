@@ -2,6 +2,7 @@
   {
     "collision_rate": 1.0,
     "expect_collision": true,
+    "group": "junction",
     "intended_partner": "violator",
     "intended_rate": 1.0,
     "intent": "A vehicle running the crossing red T-bones the ego inside the junction.",
@@ -9,7 +10,7 @@
     "mean_speed": 8.11,
     "median_events": 14,
     "median_first_t": 6.949999999999983,
-    "median_peak": 17826.435984851407,
+    "median_peak": 17826.435984851414,
     "n_collision": 1,
     "n_intended": 1,
     "n_proxy": 1,
@@ -19,11 +20,13 @@
     },
     "policy": "scripted",
     "proxy_rate": 1.0,
-    "scenario": "red_light"
+    "scenario": "red_light",
+    "town": "grid"
   },
   {
     "collision_rate": 1.0,
     "expect_collision": true,
+    "group": "junction",
     "intended_partner": "violator",
     "intended_rate": 0.15625,
     "intent": "A vehicle running the crossing red T-bones the ego inside the junction.",
@@ -42,11 +45,13 @@
     },
     "policy": "idm",
     "proxy_rate": 1.0,
-    "scenario": "red_light"
+    "scenario": "red_light",
+    "town": "grid"
   },
   {
     "collision_rate": 1.0,
     "expect_collision": true,
+    "group": "junction",
     "intended_partner": "rear_ender",
     "intended_rate": 1.0,
     "intent": "A vehicle already on the lane the ego turns onto rear-ends it.",
@@ -64,11 +69,13 @@
     },
     "policy": "scripted",
     "proxy_rate": 1.0,
-    "scenario": "right_turn"
+    "scenario": "right_turn",
+    "town": "grid"
   },
   {
     "collision_rate": 0.75,
     "expect_collision": true,
+    "group": "junction",
     "intended_partner": "rear_ender",
     "intended_rate": 0.125,
     "intent": "A vehicle already on the lane the ego turns onto rear-ends it.",
@@ -88,11 +95,13 @@
     },
     "policy": "idm",
     "proxy_rate": 0.75,
-    "scenario": "right_turn"
+    "scenario": "right_turn",
+    "town": "grid"
   },
   {
     "collision_rate": 1.0,
     "expect_collision": true,
+    "group": "junction",
     "intended_partner": "oncoming",
     "intended_rate": 1.0,
     "intent": "An oncoming vehicle strikes the ego mid unprotected-left-turn.",
@@ -100,7 +109,7 @@
     "mean_speed": 5.383,
     "median_events": 4,
     "median_first_t": 8.649999999999988,
-    "median_peak": 5939.03899214681,
+    "median_peak": 5939.038992146809,
     "n_collision": 1,
     "n_intended": 1,
     "n_proxy": 1,
@@ -110,11 +119,13 @@
     },
     "policy": "scripted",
     "proxy_rate": 1.0,
-    "scenario": "left_turn"
+    "scenario": "left_turn",
+    "town": "grid"
   },
   {
     "collision_rate": 1.0,
     "expect_collision": true,
+    "group": "junction",
     "intended_partner": "oncoming",
     "intended_rate": 0.5625,
     "intent": "An oncoming vehicle strikes the ego mid unprotected-left-turn.",
@@ -134,11 +145,13 @@
     },
     "policy": "idm",
     "proxy_rate": 1.0,
-    "scenario": "left_turn"
+    "scenario": "left_turn",
+    "town": "grid"
   },
   {
     "collision_rate": 0.0,
     "expect_collision": false,
+    "group": "junction",
     "intended_partner": null,
     "intended_rate": 1.0,
     "intent": "The ego negotiates an unsignalised crossing by precedence and nothing is hit.",
@@ -154,11 +167,13 @@
     "partners": {},
     "policy": "scripted",
     "proxy_rate": 1.0,
-    "scenario": "stop_sign"
+    "scenario": "stop_sign",
+    "town": "grid"
   },
   {
     "collision_rate": 0.296875,
     "expect_collision": false,
+    "group": "junction",
     "intended_partner": null,
     "intended_rate": 0.703125,
     "intent": "The ego negotiates an unsignalised crossing by precedence and nothing is hit.",
@@ -177,6 +192,146 @@
     },
     "policy": "idm",
     "proxy_rate": 0.703125,
-    "scenario": "stop_sign"
+    "scenario": "stop_sign",
+    "town": "grid"
+  },
+  {
+    "collision_rate": 1.0,
+    "expect_collision": true,
+    "group": "highway",
+    "intended_partner": "blocker",
+    "intended_rate": 1.0,
+    "intent": "The ego changes into the one neighbouring lane that is occupied, after the vehicle ahead brakes hard.",
+    "mean_distance": 194.27,
+    "mean_speed": 9.694,
+    "median_events": 102,
+    "median_first_t": 8.649999999999988,
+    "median_peak": 12297.080275962542,
+    "n_collision": 1,
+    "n_intended": 1,
+    "n_proxy": 1,
+    "n_runs": 1,
+    "partners": {
+      "blocker": 1,
+      "lead": 1
+    },
+    "policy": "scripted",
+    "proxy_rate": 1.0,
+    "scenario": "lane_change",
+    "town": "highway"
+  },
+  {
+    "collision_rate": 0.0,
+    "expect_collision": true,
+    "group": "highway",
+    "intended_partner": "blocker",
+    "intended_rate": 0.0,
+    "intent": "The ego changes into the one neighbouring lane that is occupied, after the vehicle ahead brakes hard.",
+    "mean_distance": 140.4575,
+    "mean_speed": 7.022859375,
+    "median_events": 0.0,
+    "median_first_t": null,
+    "median_peak": null,
+    "n_collision": 0,
+    "n_intended": 0,
+    "n_proxy": 0,
+    "n_runs": 64,
+    "partners": {},
+    "policy": "idm",
+    "proxy_rate": 0.0,
+    "scenario": "lane_change",
+    "town": "highway"
+  },
+  {
+    "collision_rate": 1.0,
+    "expect_collision": true,
+    "group": "highway",
+    "intended_partner": "hero",
+    "intended_rate": 1.0,
+    "intent": "A faster vehicle passes the ego, cuts in ~7 m ahead of it and slows; the ego runs into the back of it.",
+    "mean_distance": 224.09,
+    "mean_speed": 11.191,
+    "median_events": 135,
+    "median_first_t": 13.200000000000053,
+    "median_peak": 7857.568346166886,
+    "n_collision": 1,
+    "n_intended": 1,
+    "n_proxy": 1,
+    "n_runs": 1,
+    "partners": {
+      "hero": 1
+    },
+    "policy": "scripted",
+    "proxy_rate": 1.0,
+    "scenario": "cut_in",
+    "town": "highway"
+  },
+  {
+    "collision_rate": 0.0,
+    "expect_collision": true,
+    "group": "highway",
+    "intended_partner": "hero",
+    "intended_rate": 0.0,
+    "intent": "A faster vehicle passes the ego, cuts in ~7 m ahead of it and slows; the ego runs into the back of it.",
+    "mean_distance": 128.783125,
+    "mean_speed": 6.43915625,
+    "median_events": 0.0,
+    "median_first_t": null,
+    "median_peak": null,
+    "n_collision": 0,
+    "n_intended": 0,
+    "n_proxy": 0,
+    "n_runs": 64,
+    "partners": {},
+    "policy": "idm",
+    "proxy_rate": 0.0,
+    "scenario": "cut_in",
+    "town": "highway"
+  },
+  {
+    "collision_rate": 1.0,
+    "expect_collision": true,
+    "group": "highway",
+    "intended_partner": "oncoming",
+    "intended_rate": 1.0,
+    "intent": "The ego pulls out past a slow lorry into the oncoming lane and meets an oncoming car head-on.",
+    "mean_distance": 51.09,
+    "mean_speed": 3.178,
+    "median_events": 206,
+    "median_first_t": 5.649999999999988,
+    "median_peak": 29621.332253364202,
+    "n_collision": 1,
+    "n_intended": 1,
+    "n_proxy": 1,
+    "n_runs": 1,
+    "partners": {
+      "oncoming": 1
+    },
+    "policy": "scripted",
+    "proxy_rate": 1.0,
+    "scenario": "overtake",
+    "town": "two_lane"
+  },
+  {
+    "collision_rate": 0.0,
+    "expect_collision": true,
+    "group": "highway",
+    "intended_partner": "oncoming",
+    "intended_rate": 0.0,
+    "intent": "The ego pulls out past a slow lorry into the oncoming lane and meets an oncoming car head-on.",
+    "mean_distance": 92.0796875,
+    "mean_speed": 5.754921875,
+    "median_events": 0.0,
+    "median_first_t": null,
+    "median_peak": null,
+    "n_collision": 0,
+    "n_intended": 0,
+    "n_proxy": 0,
+    "n_runs": 64,
+    "partners": {},
+    "policy": "idm",
+    "proxy_rate": 0.0,
+    "scenario": "overtake",
+    "town": "two_lane"
   }
 ]

@@ -47,14 +47,18 @@ if ! python -c "import carla" >/dev/null 2>&1; then
 fi
 
 # scenario:duration
-# The first four are junction scenarios on Town10HD_Opt, the last three highway
-# scenarios on Town04; the map comes from each .osc, so the server reloads
-# between the two groups.
+# Ordered by map, not by family: the map comes from each .osc and the server
+# reloads whenever it changes, which costs ~20 s a time. Three junction
+# scenarios are on Town10HD_Opt, left_turn is on Town05 (see the header of
+# scenarios/benchmark/left_turn.osc for why it cannot be staged on
+# Town10HD_Opt), and the three highway scenarios are on Town04 -- so this order
+# pays for two reloads instead of four. The report's ordering comes from
+# benchmark.json and is unaffected.
 SCENARIOS=(
     "red_light:18"
     "right_turn:24"
-    "left_turn:20"
     "stop_sign:26"
+    "left_turn:20"
     "lane_change:20"
     "cut_in:20"
     "overtake:16"

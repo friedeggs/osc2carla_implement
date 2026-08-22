@@ -86,6 +86,8 @@ def evaluate(cfg, runs) -> List[dict]:
             rows.append({
                 "scenario": sc["name"],
                 "policy": pid,
+                "group": sc.get("group", "all"),
+                "town": sc.get("town"),
                 "intent": sc["intent"],
                 "expect_collision": expected,
                 "intended_partner": intended,
@@ -344,6 +346,84 @@ def legend(series: List[Dict[str, Any]]) -> str:
     return f'<div class="legend">{items}</div>'
 
 
+def group_summary(cfg, rows) -> List[dict]:
+    """Aggregate the per-cell rows into the suite's scenario families.
+
+    The benchmark is not one homogeneous set: the junction scenarios turn
+    across conflicting traffic and the highway scenarios do not turn at all,
+    and a policy swap does not have to behave the same way on both. Reporting
+    a single mean over all seven hides exactly the comparison the highway
+    scenarios were added to make. Groups come from each scenario's ``group``
+    key; a config that declares none is reported as one family.
+    """
+    order, seen = [], set()
+    for sc in cfg["scenarios"]:
+        g = sc.get("group", "all")
+        if g not in seen:
+            seen.add(g)
+            order.append(g)
+    labels = cfg.get("group_labels", {})
+    out = []
+    for g in order:
+        entry = {"group": g, "label": labels.get(g, g), "policies": {}}
+        entry["scenarios"] = [sc["name"] for sc in cfg["scenarios"]
+                              if sc.get("group", "all") == g]
+        entry["towns"] = sorted({sc.get("town") for sc in cfg["scenarios"]
+                                 if sc.get("group", "all") == g
+                                 and sc.get("town")})
+        for pid in [p["id"] for p in cfg["policies"]]:
+            cells = [r for r in rows if r["group"] == g and r["policy"] == pid]
+            if not cells:
+                continue
+            n = sum(c["n_runs"] for c in cells)
+            k = sum(c["n_intended"] for c in cells)
+            entry["policies"][pid] = {
+                "n_cells": len(cells), "n_runs": n, "n_intended": k,
+                "rate": (k / n) if n else 0.0, "ci": wilson(k, n),
+                "n_full": sum(1 for c in cells if c["intended_rate"] >= 0.999),
+                "speed": statistics.mean([c["mean_speed"] for c in cells]),
+            }
+        out.append(entry)
+    return out
+
+
+def group_section(cfg, rows, groups) -> str:
+    """Per-family result table. Skipped when the suite is one family."""
+    if len(groups) < 2:
+        return ""
+    pol = [(p["id"], p["label"]) for p in cfg["policies"]]
+    head = ("<tr><th>Family</th><th>Scenarios</th><th>Map(s)</th>" +
+            "".join(f"<th>{_esc(lab)}</th>" for _, lab in pol) + "</tr>")
+    body = []
+    for g in groups:
+        cells = []
+        for pid, _ in pol:
+            e = g["policies"].get(pid)
+            if e is None:
+                cells.append('<td class="num">—</td>')
+                continue
+            lo, hi = e["ci"]
+            cells.append(
+                f'<td class="num">{e["rate"]*100:.0f}% '
+                f'<span class="key">({e["n_intended"]}/{e["n_runs"]}) '
+                f'[{lo*100:.0f}&ndash;{hi*100:.0f}]</span><br>'
+                f'<span class="key">{e["n_full"]}/{e["n_cells"]} scenarios at '
+                f'100%, mean {e["speed"]:.2f} m/s</span></td>')
+        body.append(
+            f'<tr><td><b>{_esc(g["label"])}</b></td>'
+            f'<td>{"".join(f"<code>{_esc(n)}</code> " for n in g["scenarios"])}</td>'
+            f'<td class="key">{_esc(", ".join(g["towns"]) or "—")}</td>'
+            f'{"".join(cells)}</tr>')
+    note = cfg.get("group_note", "")
+    return ("<h2>By scenario family</h2>"
+            '<div class="scroll"><table class="data"><thead>' + head +
+            "</thead><tbody>" + "".join(body) + "</tbody></table></div>" +
+            (f'<p class="key">{note}</p>' if note else "") +
+            '<p class="key">Rates pool every run in the family, so a family with '
+            'more scenarios carries more weight; the per-scenario breakdown is in '
+            'the matrix above. Brackets are 95% Wilson intervals.</p>')
+
+
 def outcome_matrix(rows, cfg) -> str:
     scenarios = [s["name"] for s in cfg["scenarios"]]
     policies = [(p["id"], p["label"]) for p in cfg["policies"]]
@@ -375,7 +455,9 @@ def outcome_matrix(rows, cfg) -> str:
 
 
 def results_table(rows) -> str:
-    head = ("<tr><th>Scenario</th><th>Ego policy</th><th>Runs</th>"
+    show_town = any(r.get("town") for r in rows)
+    head = ("<tr><th>Scenario</th>" + ("<th>Map</th>" if show_town else "") +
+            "<th>Ego policy</th><th>Runs</th>"
             "<th>Collision rate</th><th>Intended-conflict rate</th>"
             "<th>Median first contact</th><th>Median peak impulse</th>"
             "<th>Hit by (runs)</th><th>Mean speed</th></tr>")
@@ -389,8 +471,10 @@ def results_table(rows) -> str:
         ci = (f' <span class="key">[{lo*100:.0f}&ndash;{hi*100:.0f}]</span>'
               if r["n_runs"] > 1 else "")
         ir = f'{r["intended_rate"]*100:.0f}% ({r["n_intended"]}/{r["n_runs"]}){ci}'
+        town = (f'<td class="key">{_esc(r.get("town") or "—")}</td>'
+                if show_town else "")
         body.append(
-            f'<tr><td><code>{_esc(r["scenario"])}</code></td>'
+            f'<tr><td><code>{_esc(r["scenario"])}</code></td>{town}'
             f'<td>{_esc(r["policy"])}</td><td class="num">{r["n_runs"]}</td>'
             f'<td class="num">{cr}</td><td class="num">{ir}</td>'
             f'<td class="num">{first}</td><td class="num">{peak}</td>'
@@ -410,16 +494,15 @@ so the repeat sweep is cheap; recording video is what costs time.</p>
 
 
 DEFAULT_NOTES = """<ul>
-<li><b>Repeatability.</b> Every cell above was unanimous across its 20 repeats — 20/20 or
-0/20, never a split — so within this configuration the outcomes are repeatable and the
-rates are not hiding variance. One earlier <em>video-recording</em> run of
-<code>left_turn</code> scripted did produce no collision; it came from the session in
-which the CARLA server later crashed, and it did not reproduce in 20 clean repeats. Treat
-marginal conflicts as worth re-running rather than trusting a single sample.</li>
+<li><b>Repeatability.</b> CARLA's physics substepping is not bit-reproducible, so a
+marginal conflict can flip between runs of an identical file. Where a cell carries
+repeats, check whether it was unanimous before quoting its rate; where it carries a
+single run, treat it as a sample rather than a measurement and re-run with
+<code>REPEATS=</code>. The runner exists for that
+(<code>REPEATS=20 ./experiments/run_experiments.sh results/repeats --no-video</code>).</li>
 <li><b>Instrumentation is excluded.</b> The benchmark scenarios place a ground-decal
 marker at each conflict point as a distance reference. CARLA does occasionally report a
-contact when the ego drives over it (6 of these 160 runs, all in
-<code>left_turn</code> under IDM), so the metric counts only vehicle-versus-vehicle
+contact when the ego drives over it, so the metric counts only vehicle-versus-vehicle
 contacts; static-prop contacts are recorded separately as
 <code>n_static_contacts</code>. Counting them would let a clean run register as a
 crash.</li>
@@ -502,6 +585,14 @@ ul{padding-left:20px}
 """
 
 
+_NUMWORD = {1: "one", 2: "two", 3: "three", 4: "four", 5: "five", 6: "six",
+            7: "seven", 8: "eight", 9: "nine", 10: "ten"}
+
+
+def _numword(n: int) -> str:
+    return _NUMWORD.get(n, str(n))
+
+
 def build_html(cfg, rows, sens=None) -> str:
     sens = sens or []
     scen = [s["name"] for s in cfg["scenarios"]]
@@ -541,6 +632,28 @@ def build_html(cfg, rows, sens=None) -> str:
     else:
         notes_html = DEFAULT_NOTES
 
+    groups = group_summary(cfg, rows)
+    families_html = group_section(cfg, rows, groups)
+
+    # The suite's shape is a property of the config, not of this generator: it
+    # started as four junction scenarios and now carries highway ones too, so
+    # every count in the prose below is derived rather than written out.
+    n_scen = len(cfg["scenarios"])
+    crash = [s for s in cfg["scenarios"] if s["expect_collision"]]
+    clean = [s for s in cfg["scenarios"] if not s["expect_collision"]]
+    reps = sorted({r["n_runs"] for r in rows})
+    reps_txt = (f"Each cell was repeated {reps[0]} times."
+                if len(reps) == 1 and reps[0] > 1
+                else ("Each cell is a single run." if reps == [1]
+                      else f"Cells carry {min(reps)}-{max(reps)} runs each."))
+    towns = [t for t in (cfg.get("town_summary"),) if t] or \
+        sorted({s.get("town") for s in cfg["scenarios"] if s.get("town")})
+    towns_txt = ", ".join(towns) if isinstance(towns, list) else str(towns)
+    title = cfg.get("report_title",
+                    f"Swapping the ego controller on {_numword(n_scen)} scenarios")
+    backend = cfg.get("report_backend", "CARLA 0.9.16")
+    clean_txt = " and ".join(f"<code>{_esc(s['name'])}</code>" for s in clean)
+
     p = cfg["idm_parameters"]
     idm_params = (f'v0={p["v0"]} m/s, T={p["T"]} s, a_max={p["a_max"]} m/s², '
                   f'b={p["b"]} m/s², δ={p["delta"]}, s0={p["s0"]} m')
@@ -571,22 +684,27 @@ def build_html(cfg, rows, sens=None) -> str:
             f'scripted; baseline reproduced its intent in '
             f'{s["n_intended"]}/{s["n_runs"]} runs.</div>')
 
+    towns_sub = f" / {towns_txt}" if towns_txt else ""
+    scen_dir = cfg.get("scenario_dir", "scenarios/benchmark")
+    n_scen_word = _numword(n_scen)
+    n_crash_word = _numword(len(crash))
+    has_have = "has" if len(clean) == 1 else "have"
+
     return f"""<title>Ego Policy Benchmark</title>
 <style>{CSS}</style>
 <div class="wrap">
-<h1>Swapping the ego controller on four junction scenarios</h1>
+<h1>{title}</h1>
 <p class="sub">IDM against the compiled behaviour tree, measured by collision occurrence
-over {n_runs} runs on CARLA 0.9.16 / Town10HD_Opt.</p>
+over {n_runs} runs on {backend}{towns_sub}.</p>
 
 <div class="card">
-<b>What was run.</b> Each of the four <code>scenarios/benchmark</code> scenarios was
+<b>What was run.</b> Each of the {n_scen_word} scenarios in <code>{scen_dir}</code> was
 executed under two arms: once exactly as compiled, and once with the ego's actuation
-handed to an Intelligent Driver Model through the new <code>--ego-policy</code> entry
+handed to an Intelligent Driver Model through the <code>--ego-policy</code> entry
 point. Everything else — NPC timelines, spawn geometry, <code>emit</code>/<code>wait</code>
 events, the monitors that fire the adversarial triggers — is identical between arms;
 only the ego's controller changes. IDM ran with library defaults ({idm_params}) in all
-four scenarios, so no per-scenario tuning is hiding in the results. Each cell was
-repeated 20 times.
+{n_scen_word} scenarios, so no per-scenario tuning is hiding in the results. {reps_txt}
 </div>
 
 <h2>The metric</h2>
@@ -594,9 +712,9 @@ repeated 20 times.
 a proxy for whether the scenario still executed what it was written to exercise. The
 proxy is directional — it is not "fewer crashes is better":</p>
 <ul>
-<li>the three crash scenarios have executed correctly when the ego <b>is</b> hit; a
-clean run means the scripted conflict never developed;</li>
-<li><code>stop_sign</code> has executed correctly when the ego is <b>not</b> hit.</li>
+<li>the {n_crash_word} crash scenarios have executed correctly when the ego <b>is</b>
+hit; a clean run means the scripted conflict never developed;</li>
+<li>{clean_txt} {has_have} executed correctly when the ego is <b>not</b> hit.</li>
 </ul>
 <p>So the raw proxy is <code>collision_occurred == expect_collision</code>. Running the
 experiment showed that this alone is too weak: a collision with the <em>wrong</em>
@@ -612,6 +730,8 @@ Scripted baseline: {base_full}/{len(base_rows)} scenarios at 100%. IDM:
 {idm_full}/{len(idm_rows)}.</p>
 
 {"".join(findings)}
+
+{families_html}
 
 <h2>Charts</h2>
 

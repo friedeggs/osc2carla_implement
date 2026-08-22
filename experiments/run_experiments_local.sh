@@ -41,6 +41,10 @@ mkdir -p "${OUT_DIR}"
 
 # scenario:duration:junction-turn:town  (see benchmark_local.json for why each
 # scenario needs its own manoeuvre preference and its own road network)
+# The four junction scenarios share the synthesised `grid` town and differ only
+# in --junction-turn; the three highway scenarios need a road with no junction
+# on it at all (`highway` for the multi-lane pair, `two_lane` for the
+# single-carriageway overtake).
 SCENARIOS=(
     "red_light:18:straight:grid"
     "right_turn:24:right:grid"

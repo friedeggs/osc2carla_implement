@@ -41,7 +41,9 @@
       "observed_scripted": {
         "first_collision_time": 6.95,
         "peak_impulse": 17826
-      }
+      },
+      "group": "junction",
+      "town": "grid"
     },
     {
       "name": "right_turn",
@@ -53,7 +55,9 @@
       "observed_scripted": {
         "first_collision_time": 9.35,
         "peak_impulse": 4261
-      }
+      },
+      "group": "junction",
+      "town": "grid"
     },
     {
       "name": "left_turn",
@@ -65,7 +69,9 @@
       "observed_scripted": {
         "first_collision_time": 8.65,
         "peak_impulse": 5939
-      }
+      },
+      "group": "junction",
+      "town": "grid"
     },
     {
       "name": "stop_sign",
@@ -77,7 +83,9 @@
       "observed_scripted": {
         "first_collision_time": null,
         "peak_impulse": 0
-      }
+      },
+      "group": "junction",
+      "town": "grid"
     },
     {
       "name": "lane_change",
@@ -91,7 +99,8 @@
         "first_collision_time": 8.65,
         "peak_impulse": 12297,
         "note": "partners blocker then lead: the side impact knocks the ego back into its own lane, where the braking lead still is"
-      }
+      },
+      "group": "highway"
     },
     {
       "name": "cut_in",
@@ -104,7 +113,8 @@
       "observed_scripted": {
         "first_collision_time": 13.2,
         "peak_impulse": 7858
-      }
+      },
+      "group": "highway"
     },
     {
       "name": "overtake",
@@ -117,7 +127,8 @@
       "observed_scripted": {
         "first_collision_time": 5.65,
         "peak_impulse": 29621
-      }
+      },
+      "group": "highway"
     }
   ],
   "junction_turn_note": "drive() follows waypoint.next()[0], so which way a vehicle goes through a junction is a property of the lane it is on. --junction-turn sets the map-wide preference and the town's lane-pairing rule supplies the per-actor difference: a left turn is connected only from the innermost lane and a right turn only between outermost lanes, so a vehicle on the other lane has no such connector and goes straight. Each scenario's header comment states which actor is on which lane and why.",
@@ -167,5 +178,13 @@
     "<b>Lateral control is shared.</b> IDM is longitudinal only; steering reuses the same pure-pursuit rule as the compiled <code>drive()</code>, so both arms follow the identical route through each junction and the comparison isolates the longitudinal policy.",
     "<b>Geometry is synthesised.</b> These scenarios run at the centre junction of the local <code>grid</code> town, not at Town10HD_Opt junctions 189/841/134. Absolute numbers are not comparable with the CARLA benchmark; the intended <em>outcome</em> per scenario is."
   ],
-  "report_reproducing": "# 64-sample IDM parameter sweep + scripted reference (260 runs, ~1 min on 12 cores)\npython experiments/sweep_idm_local.py -n 64 --seed 20260818 --jobs 12 --check-determinism\npython experiments/make_report.py experiments/results_local_sweep \\\n    -c experiments/benchmark_local.json -o experiments/report_local/index.html\n\n# single-sample run of both arms, with bird's-eye recordings\n./experiments/run_experiments_local.sh\n\nNeeds pygame and nothing else: no CARLA, no GPU, no server, and no Python 3.8\nconstraint. A no-video run takes ~1.8 s. The sweep is reproducible from the seed:\nthe sampler is seeded and the simulator is deterministic, so the same seed gives\nthe same 64 parameter vectors and the same 260 results."
+  "report_reproducing": "# 64-sample IDM parameter sweep + scripted reference (455 runs, ~5 min on 12 cores)\npython experiments/sweep_idm_local.py -n 64 --seed 20260818 --jobs 12 --check-determinism\npython experiments/make_report.py experiments/results_local_sweep \\\n    -c experiments/benchmark_local.json -o experiments/report_local/index.html\n\n# single-sample run of both arms, with bird's-eye recordings\n./experiments/run_experiments_local.sh\n\nNeeds pygame and nothing else: no CARLA, no GPU, no server. A no-video run takes\n~2 s for a junction scenario and ~1 s for a highway one. The sweep is reproducible\nfrom the seed: the sampler is seeded and the simulator is deterministic, so the same\nseed gives the same 64 parameter vectors and the same 455 results.",
+  "report_title": "Swapping the ego controller on the local-simulator benchmark",
+  "report_backend": "the bundled local simulator (--backend pygame)",
+  "scenario_dir": "scenarios/local/benchmark",
+  "group_labels": {
+    "junction": "Junction (4)",
+    "highway": "Highway (3)"
+  },
+  "group_note": "The two families fail differently, and that is why they are reported apart. A junction scenario stages its conflict at a place the ego has to cross, so an ego that arrives late or slow misses the conflict entirely and is instead rear-ended by its own scripted follower -- drive() has no braking driver model. A highway scenario stages its conflict in the ego's own lane, so a slower ego still meets it; what changes is when, and whether the ego ends up the striker or the struck."
 }
