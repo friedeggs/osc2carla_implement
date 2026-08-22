@@ -44,20 +44,41 @@ import "domain.osc"
 #   t = 0        all five vehicles spawn at rest, then launch on @go_signal.
 #   t ~ 0-5      ego cruises westbound at 30 kph behind the lead vehicle;
 #                violator and stopper cruise toward their red signal.
-#   t ~ 4.6      ego crosses the stop line; the monitor emits EGO_IN_JUNCTION.
-#                The stopper has already begun braking for the red and comes to
-#                rest ~5 m short of its own stop line.
-#   t ~ 6.2      ego reaches the conflict area; the monitor emits
-#                EGO_AT_CONFLICT_POINT and the violator commits.
-#   t ~ 6.5      violator, now in ram(target: ego), strikes the ego's right
-#                flank inside the intersection (first contact, impulse ~5300).
-#                The ego-mounted collision sensor overlays every contact.
-#   t ~ 6.5-18   violator keeps pushing the ego across the junction; the
-#                follower runs into the back of the wreck around t ~ 12.
+#   t = 4.55     ego crosses the stop line; the monitor emits EGO_IN_JUNCTION.
+#                The stopper has already begun braking for the red, brake
+#                lights on.
+#   t = 6.25     ego reaches the conflict area; the monitor emits
+#                EGO_AT_CONFLICT_POINT and the violator commits, accelerating
+#                to v_violator_run to beat the phase.  The stopper, which
+#                started braking 30 m out, is at rest by now, 24.4 m short of
+#                the conflict point.
+#   t = 6.55     violator strikes the ego's right flank inside the intersection
+#                (first contact, peak impulse ~12300).  The ego-mounted
+#                collision sensor overlays every contact.
+#   t = 6.55-18  violator keeps pushing the ego across the junction.
 #   t = 18       termination guard.
 #
-# Observed on CARLA 0.9.16 (Town10HD_Opt): ~417 collision events, first contact
-# at t = 6.5 s.  Exact counts shift with CARLA build and physics substepping.
+# Observed on CARLA 0.9.16 (Town10HD_Opt) over two runs: 17 collision events,
+# first contact at t = 6.55 s both times, peak impulse 12241-12357, sole
+# collision partner `violator` -- the intended one.  Exact counts shift with CARLA build and physics substepping.
+#
+# Difference from the ram version of this file, which the results recorded
+# before this one correspond to: the violator used to switch to
+# ram(target: ego) on @EGO_AT_CONFLICT_POINT.  ram is not an OSC2Runner
+# construct -- it appears nowhere in the paper, whose action vocabulary
+# (Table 2, Listings 1-3) has no pursuit primitive -- so the violator instead
+# does the only thing a red-light runner actually does: it does not brake.
+# drive() has no yielding or collision-avoidance term, so a vehicle that keeps
+# driving its lane through the box IS a vehicle that has run the red.  The
+# substitution costs almost nothing here, because the violator was already on
+# a collision course before the trigger: first contact moves from 6.50 s to
+# 6.55 s.  The peak impulse RISES, from ~5300 to ~12300: ram steered the truck
+# onto the ego and bled speed doing it, where holding its own lane at
+# v_violator_run puts the full 40 kph squarely into the ego's flank.  The event
+# count falls from ~417 to 17, because the truck no longer keeps homing on the
+# wreck for the rest of the run.  collision_occurred and the intended partner
+# are unchanged, and those are what expect_collision and intended_partner
+# test.
 #
 # Signal note: this baseline does not implement traffic lights (see "Coverage
 # vs. the paper" in README.md) -- there is no action to set or read a signal
@@ -66,17 +87,6 @@ import "domain.osc"
 # conflict area at speed on the ego's crossing phase and never yields, while
 # the stopper on the same approach halts at the line.
 #
-# ------------------------------------------------------------------------
-# UNVERIFIED ON CARLA.  ram(target: ego) has been removed from this file: it
-# is not an OSC2Runner construct -- it appears nowhere in the paper, whose
-# action vocabulary (Table 2, Listings 1-3) has no pursuit primitive.  The
-# substitution is mechanically sound but its TIMING has not been run against
-# CARLA, because no server is available where this edit was made.  The
-# recorded results in experiments/results/ correspond to the ram version of
-# this file, not to this one.  Re-tune and re-record before quoting numbers;
-# the knob is v_violator / the violator's spawn y, which set when it
-# reaches the conflict point relative to the ego.
-# ------------------------------------------------------------------------
 scenario red_light:
     carla_map: map with:
         keep(it.map_file == "Town10HD_Opt")
@@ -242,6 +252,7 @@ scenario red_light:
                     speed(v_stopper)
                 wait rise(stopper.object_distance(reference: conflict_point, direction: euclidean) < stop_line_gap)
 
+            stopper.set_lights(mode: brake)
             stopper.change_speed(target: 0kph, rate_profile: asap)
             wait stopper.speed < 0.3kph
 
