@@ -502,3 +502,58 @@ python -m osc2carla <scenario.osc> [options]
 | `--backend {carla,pygame}` | execution backend; `pygame` is the bundled local simulator (see §1b) |
 | `--metrics-out PATH` | JSON run summary (collision occurrence, impulses, motion stats) |
 | `--ego-policy NAME` | hand the ego's actuation to an external policy (`idm`, `constant`, or `module:Class`) |
+
+## Running under the `scenario_orchestration` harness
+
+The centralized harness in `../scenario_orchestration` treats this tree as a
+third-party **scenario execution method**. The integration boundary is a
+subprocess and two JSON documents (its DESIGN.md section 5), so nothing is
+imported across it in either direction:
+
+```text
+scenario_orchestration/
+├── capabilities.json                what this repository supports
+├── run.py                           the standardized entry point
+└── osc2carla_policy_bridge.py       loads an external ego policy
+```
+
+```bash
+python scenario_orchestration/run.py \
+    --scenario-request request.json \
+    --policy-request policy.json \
+    --output-dir <results>/raw/<experiment_id>
+```
+
+`run.py` turns the scenario request into an `osc2carla` invocation — which
+`.osc` file, on which backend, for how long — translates the policy request
+into `--ego-policy` and this repository's parameter names, and writes
+`method_result.json` back. Wire it up as the harness does:
+
+```bash
+git -C ../scenario_orchestration submodule add <this repo> third_party/osc2runner
+python -m scenario_orchestration validate algorithm=osc2runner
+OSC2CARLA_BACKEND=pygame python -m scenario_orchestration \
+    run scenario=red_light algorithm=osc2runner policy=idm seeds=0
+```
+
+| Request field | What it becomes here |
+|---|---|
+| `implementation.native_id` | `scenarios/benchmark/<id>.osc` (CARLA) or `scenarios/local/benchmark/<id>.osc` (`--backend pygame`); falls back to the family name |
+| `evaluation.horizon_s` | `--sim-duration`, shortened to the scenario's own tuned duration from `experiments/benchmark*.json` |
+| `evaluation.tick_rate_hz` | `--fixed-dt` |
+| `implementation.parameters.town` | advisory only — each `.osc` pins its own map; a request town applies only when it names a bundled local network |
+| policy `idm` / `idm_assertive` / `idm_conservative` / `constant` | `--ego-policy` with `desired_speed_mps`→`v0`, `time_headway_s`→`T`, `min_gap_m`→`s0`, `max_accel_mps2`→`a_max`, `comfort_decel_mps2`→`b` |
+| any other `ego_policy_v1` policy | loaded from its own repository's `scenario_orchestration/policy.py` through the bridge |
+| `seed` | recorded, not applied: the local backend is deterministic and CARLA's variation comes from physics substepping |
+
+The canonical metrics come from the same run summary the local experiments use:
+`scenario_realized` is this benchmark's intent proxy (`collision_occurred ==
+expect_collision`, with the `intended_partner` among the contacted roles), and
+`scenario_success` follows the harness's own criteria, `scenario_realized` and
+no collision. For the six adversarial families those two rarely coincide, since
+the collision *is* how a staged conflict is detected; `stop_sign` is the family
+where success reads the ordinary way.
+
+The backend defaults to CARLA. `OSC2CARLA_BACKEND=pygame` runs the local ports
+instead, with no server and no GPU; `run.py`'s module docstring lists the other
+operator overrides (interpreter, RPC endpoint, step size, video, timeout).

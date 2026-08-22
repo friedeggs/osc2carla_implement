@@ -1,0 +1,76 @@
+{
+  "name": "osc2runner",
+  "schema_version": "1.0.0",
+  "scenario_families": [
+    "red_light",
+    "cut_in",
+    "lane_change",
+    "left_turn",
+    "right_turn",
+    "overtake",
+    "stop_sign"
+  ],
+  "policy_interfaces": ["ego_policy_v1"],
+  "observation_spaces": ["state"],
+  "action_spaces": ["control"],
+  "closed_loop": true,
+
+  "entry_point": "scenario_orchestration/run.py",
+  "native_scenarios": {
+    "carla": {
+      "directory": "scenarios/benchmark",
+      "red_light": "red_light.osc",
+      "cut_in": "cut_in.osc",
+      "lane_change": "lane_change.osc",
+      "left_turn": "left_turn.osc",
+      "right_turn": "right_turn.osc",
+      "overtake": "overtake.osc",
+      "stop_sign": "stop_sign.osc"
+    },
+    "pygame": {
+      "directory": "scenarios/local/benchmark",
+      "red_light": "red_light.osc",
+      "cut_in": "cut_in.osc",
+      "lane_change": "lane_change.osc",
+      "left_turn": "left_turn.osc",
+      "right_turn": "right_turn.osc",
+      "overtake": "overtake.osc",
+      "stop_sign": "stop_sign.osc"
+    }
+  },
+  "native_id_aliases": {
+    "red_light_violation": "red_light",
+    "red_light_violation.osc": "red_light"
+  },
+
+  "policies": {
+    "native": ["idm", "idm_assertive", "idm_conservative", "constant", "scripted"],
+    "external": "any ego_policy_v1 policy whose repository exposes scenario_orchestration/policy.py; it is loaded through scenario_orchestration/osc2carla_policy_bridge.py",
+    "parameter_translation": {
+      "desired_speed_mps": "v0",
+      "time_headway_s": "T",
+      "min_gap_m": "s0",
+      "max_accel_mps2": "a_max",
+      "comfort_decel_mps2": "b"
+    }
+  },
+
+  "metrics": [
+    "scenario_realized",
+    "scenario_success",
+    "collision",
+    "near_collision",
+    "time_to_event",
+    "scenario_duration"
+  ],
+
+  "notes": {
+    "identity": "Independent reimplementation of the OpenSCENARIO 2.1 -> CARLA compiler of arXiv:2604.16452. Scenarios are .osc source compiled to a py_trees behaviour tree; the native id of a family is its .osc file.",
+    "closed_loop": "Declared true, and this disagrees with configs/algorithm/osc2runner.yaml, which declares false. The adversary timelines are compiled and open-loop, but their triggers are live monitors on the ego's state, and --ego-policy hands the ego's actuation to an external controller that is ticked once per simulated step against a fresh state observation. Only the compiled 'scripted' arm is open-loop end to end.",
+    "observation_spaces": "state only. The ego policy receives ego pose, speed, the sampled route ahead and the closest leader on it. No sensor stream is rendered for the policy, so sensorimotor policies (transfuser, tfv6, simlingo) and waypoint/trajectory action spaces are not supported.",
+    "stop_sign": "Not a family this harness defines. Declared because the repository implements it and its intended outcome is the absence of a collision, which makes it the one family here whose success does not depend on a conflict developing on schedule.",
+    "scenario_parameters": "implementation.parameters.town is advisory. Each .osc hard-codes the stage geometry of one map (keep(it.map_file == ...)), so on the CARLA backend the town comes from the scenario and a differing request parameter is recorded, not applied. On the local backend a request town is applied only when it names one of the bundled road networks (grid, highway, loop, two_lane, wide_grid).",
+    "seed": "The pipeline exposes no seed. The local simulator is deterministic (fixed step, no substepping), so repeats of one cell are bit-identical and the seed carries no information; on CARLA the variation comes from physics substepping, which no seed here controls. The requested seed is recorded with every result.",
+    "trace": "No per-step trace is emitted. The run summary written by osc2carla/backend/metrics.py is copied into the output directory as osc2carla_metrics.json and referenced from method_metrics."
+  }
+}
