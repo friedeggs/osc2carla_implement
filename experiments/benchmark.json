@@ -1,8 +1,19 @@
 {
-  "description": "Ego-policy swap experiment over scenarios/benchmark. Each scenario is run twice: once as compiled (the ego driven by its behaviour-tree timeline) and once with the ego's actuation handed to the IDM policy through the --ego-policy entry point. Everything else about the scenario -- NPC timelines, events, monitors, spawn geometry -- is identical between the two arms.",
+  "description": "Ego-policy swap experiment over scenarios/benchmark -- four junction scenarios on Town10HD_Opt and three highway scenarios on Town04. Each scenario is run twice: once as compiled (the ego driven by its behaviour-tree timeline) and once with the ego's actuation handed to the IDM policy through the --ego-policy entry point. Everything else about the scenario -- NPC timelines, events, monitors, spawn geometry -- is identical between the two arms.",
   "policies": [
-    {"id": "scripted", "cli": [], "label": "Scripted (behaviour tree)"},
-    {"id": "idm", "cli": ["--ego-policy", "idm"], "label": "IDM policy"}
+    {
+      "id": "scripted",
+      "cli": [],
+      "label": "Scripted (behaviour tree)"
+    },
+    {
+      "id": "idm",
+      "cli": [
+        "--ego-policy",
+        "idm"
+      ],
+      "label": "IDM policy"
+    }
   ],
   "idm_parameters": {
     "v0": 8.333,
@@ -11,7 +22,7 @@
     "b": 2.0,
     "delta": 4.0,
     "s0": 2.0,
-    "note": "Library defaults, identical across all four scenarios, so the arm differs only in the controller and not in per-scenario tuning."
+    "note": "Library defaults, identical across all seven scenarios, so the arm differs only in the controller and not in per-scenario tuning."
   },
   "scenarios": [
     {
@@ -41,6 +52,27 @@
       "intent": "The ego negotiates an unsignalised crossing by precedence and nothing is hit.",
       "expect_collision": false,
       "intended_partner": null
+    },
+    {
+      "name": "lane_change",
+      "sim_duration": 20,
+      "intent": "The ego changes into the one neighbouring lane that is occupied, after the vehicle ahead brakes hard.",
+      "expect_collision": true,
+      "intended_partner": "blocker"
+    },
+    {
+      "name": "cut_in",
+      "sim_duration": 20,
+      "intent": "A faster vehicle passes the ego, cuts in ~7 m ahead of it and slows; the ego runs into the back of it.",
+      "expect_collision": true,
+      "intended_partner": "hero"
+    },
+    {
+      "name": "overtake",
+      "sim_duration": 16,
+      "intent": "The ego pulls out past a slow lorry into the oncoming lane and meets an oncoming car head-on.",
+      "expect_collision": true,
+      "intended_partner": "oncoming"
     }
   ]
 }

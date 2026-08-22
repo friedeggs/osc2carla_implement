@@ -177,6 +177,17 @@ class Waypoint:
         return self._lane.width
 
     @property
+    def lane_type(self) -> str:
+        """Mirrors ``carla.Waypoint.lane_type``.
+
+        Every synthesised lane is a driving lane -- there are no shoulders or
+        parking bays here -- but the attribute has to exist, because a lane
+        change asks for the type before moving into a neighbour and CARLA does
+        hand back shoulders from ``get_left_lane()``.
+        """
+        return "Driving"
+
+    @property
     def is_junction(self) -> bool:
         return self._lane.is_junction
 

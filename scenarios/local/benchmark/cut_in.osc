@@ -1,0 +1,175 @@
+import "domain.osc"
+
+# Cut-in from the adjacent lane -- LOCAL SIMULATOR port of
+# scenarios/benchmark/cut_in.osc.
+#
+#   python -m osc2carla scenarios/local/benchmark/cut_in.osc \
+#       --backend pygame --town highway --sim-duration 20
+#
+# Natural-language scenario, unchanged from the CARLA original:
+#
+#   The ego is cruising a multi-lane carriageway.  A faster vehicle in the
+#   lane to its left comes up beside it, passes, and as soon as it is barely
+#   clear of the ego's front bumper moves across into the ego's lane -- then
+#   settles at a speed well below the ego's.  The ego is left closing on a car
+#   that cut in front of it, and it runs into the back of it.
+#
+# Stage geometry -- the y = 0 carriageway of the `highway` town, eastbound,
+# x in [14.5, 485.5]:
+#
+#      lane -1  y = 1.75   hero ->                (the passing lane)
+#      lane -2  y = 5.25   ego ->                 (the ego's own lane)
+#      lane -3  y = 8.75   outer ->               (background traffic)
+#      -------------------------------------- centre line
+#      lane +1..+3         (opposing carriageway, unused)
+#
+#   * There is no obstacle and no braking manoeuvre anywhere in this file.
+#     The whole conflict is one vehicle taking a gap that is not there, which
+#     is what makes a cut-in a cut-in.
+#
+# Actors (3 vehicles):
+#   ego    Tesla Model 3 (camera vehicle), middle lane, constant v_ego.
+#   hero   Dodge Charger, 8 m behind the ego in the left lane, running
+#          v_hero.  Overtakes, moves right when it is cut_in_lead ahead of the
+#          ego, then falls back to v_hero_slow in front of it.
+#   outer  Seat Leon, right lane, well behind: background traffic that never
+#          reaches the conflict.
+#
+# Timeline:
+#   t = 0            both spawn at rest, launch on @go_signal.
+#   t ~ 0-4          the hero, faster, draws level with the ego and passes it.
+#   ahead>=cut_in_lead  monitor emits HERO_AHEAD; the hero moves across with
+#                    change_lane(side: right), which puts it in the ego's lane
+#                    ~cut_in_lead ahead -- about 7 m bumper to bumper.
+#   CUT_IN_DONE      the hero eases off to v_hero_slow and holds it.
+#   contact          the ego is 20 kph faster and drive() has no car-following
+#                    term, so it closes on the hero and hits it from behind.
+#   t = 20           termination guard.
+#
+# Why the ego does not brake.  drive() is a PID on its own speed setpoint plus
+# pure-pursuit steering; it has no leader term at all (see PIPELINE_WALKTHROUGH,
+# "What is implemented vs. not").  That is exactly what makes this scenario
+# discriminating under --ego-policy: an IDM ego has a leader term and should
+# open the gap instead, so the same file measures whether a controller reacts
+# to something that cuts in ahead of it.
+#
+# Differences from the CARLA original: only the stage.  Every speed and every
+# distance is the same number in both files; what changes is the road under
+# them -- three lanes each way instead of four, flat instead of a 5% descent,
+# and this town's absolute coordinates.  The pass therefore takes longer to
+# set up here (the local bicycle model accelerates less hard than CARLA's
+# physics), which moves the contact from 10.85 s there to 13.20 s here.
+#
+# Expected on the local backend: collision_occurred = true, first contact at
+# t = 13.20 s, peak impulse ~7900, sole partner hero, struck front-to-rear
+# while it is ahead of the ego in the ego's own lane -- i.e. after the cut-in
+# has completed, not during it.  Under --ego-policy idm: no collision -- IDM
+# has a leader term and opens the gap the cut-in closed (min_leader_gap
+# 11.1 m).
+
+scenario cut_in:
+    carla_map: map with:
+        keep(it.map_file == "highway")
+
+    env: environment
+
+    ego: vehicle with:
+        keep(it.name == "ego")
+        keep(it.model == "vehicle.tesla.model3")
+
+    hero: vehicle with:
+        keep(it.name == "hero")
+        keep(it.model == "vehicle.dodge.charger_2020")
+        keep(it.color == "160,20,20")
+
+    outer: vehicle with:
+        keep(it.name == "outer")
+        keep(it.model == "vehicle.seat.leon")
+        keep(it.color == "0,90,160")
+
+    # --- Speeds ---
+    var v_ego: speed = 50kph
+    var v_hero: speed = 75kph
+    # What the hero settles at once it is in front: the cut-in is only a
+    # conflict because of this number.
+    var v_hero_slow: speed = 30kph
+    var v_outer: speed = 40kph
+
+    # --- Distances ---
+    # How far ahead the hero is before it moves across. Front-to-rear this is
+    # about 7 m: enough for the manoeuvre to complete, not enough to be safe.
+    var cut_in_lead: length = 12m
+
+    do parallel:
+        env.assign_celestial_position(azimuth: 0deg, elevation: 65deg)
+
+        # ---- EGO: holds its lane and its speed throughout ----
+        serial:
+            ego.assign_position() with:
+                position(x: 40.00, y: 5.25, z: 0.00, h: 0.0rad, at: start)
+                speed(0kph, at: start)
+
+            wait @go_signal
+
+            one_of:
+                ego.drive() with:
+                    speed(v_ego)
+                    keep_lane()
+                wait elapsed(19s)
+
+        # ---- HERO: overtake, cut in, then slow down ----
+        serial:
+            hero.assign_position() with:
+                position(x: 32.00, y: 1.75, z: 0.00, h: 0.0rad, at: start)
+                speed(0kph, at: start)
+
+            wait @go_signal
+
+            one_of:
+                hero.drive() with:
+                    speed(v_hero)
+                    keep_lane()
+                wait @HERO_AHEAD
+
+            # The cut-in itself. The manoeuvre asks for the lane, not for the
+            # gap: nothing in change_lane checks what is behind it there.
+            hero.change_lane(num_of_lanes: 1, side: right) with:
+                speed(v_hero)
+            emit CUT_IN_DONE
+
+            # Straight into drive() at the lower setpoint, not through
+            # change_speed(): a longitudinal-only action commands the wheels
+            # straight, and a car that has just finished a lane change still
+            # carries a couple of degrees of yaw, so it would drift out of the
+            # lane it had just taken. drive()'s PID does the deceleration and
+            # keeps steering while it does.
+            one_of:
+                hero.drive() with:
+                    speed(v_hero_slow)
+                    keep_lane()
+                wait elapsed(12s)
+
+        # ---- OUTER: background traffic in the right lane ----
+        serial:
+            outer.assign_position() with:
+                position(x: 16.00, y: 8.75, z: 0.00, h: 0.0rad, at: start)
+                speed(0kph, at: start)
+
+            wait @go_signal
+
+            one_of:
+                outer.drive() with:
+                    speed(v_outer)
+                    keep_lane()
+                wait elapsed(19s)
+
+        # ---- Monitor: is the hero clear enough of the ego to move across? ----
+        # ahead_of is the signed along-road distance, so this fires on the
+        # hero's progress relative to the ego rather than on a timer.
+        serial:
+            wait @go_signal
+            wait rise(hero.position.ahead_of(ego) >= cut_in_lead)
+            emit HERO_AHEAD
+
+        # ---- Termination guard ----
+        wait elapsed(20s)

@@ -43,7 +43,8 @@ osc2carla_implement/
 | `scenarios/hello_world.osc` | Paper case study (Listings 2–3) | **dry-run only** here (needs Town06 + `lane()` placement, neither of which this baseline implements) |
 | `scenarios/nl2/nl2.osc` | Extra NL-template experiment, **not from the paper** | optional |
 | `scenarios/local/local_crossing.osc` | Junction failure-to-yield, written against the local backend's `grid` town | **no** — `--backend pygame` |
-| `scenarios/local/benchmark/*.osc` | The four benchmark scenarios ported to the local `grid` town | **no** — `--backend pygame` |
+| `scenarios/benchmark/{lane_change,cut_in,overtake}.osc` | Three highway scenarios (SafeBench-style) on **Town04** | yes, Town04 |
+| `scenarios/local/benchmark/*.osc` | The seven benchmark scenarios ported to the local `grid` / `highway` / `two_lane` towns | **no** — `--backend pygame` |
 
 `--dry-run` on `hello_world.osc` is the compile-only check against the paper’s behaviour tree. Running it live would need Town06 and lane-based spawn, which this baseline does not implement (see “Coverage vs. the paper” below).
 
@@ -164,7 +165,12 @@ bites — no CARLA town geometry. `localsim/towns.py` synthesises grid networks:
 ```
 $ python -m osc2carla --list-towns
 grid        3x3 junctions, 80 m spacing. One four-way junction, at (80, 80).
+highway     Three lanes each way, ~470 m of straight. The Town04 stand-in for
+            lane changes and cut-ins: a lane on both sides of the ego.
 loop        Single rectangular circuit. No four-way junction.
+two_lane    One lane each way, undivided, ~385 m of straight. The left
+            neighbour of a lane here is oncoming traffic, which is what an
+            overtake needs and a divided highway cannot provide.
 wide_grid   4x4 junctions over x,y in [-80, 160]. Four four-way junctions --
             (0,0), (0,80), (80,0), (80,80) -- with 66 m approaches on every arm.
 ```
@@ -225,14 +231,51 @@ comes from the OpenDRIVE file; here it is explicit, and `--junction-turn
 
 ### The benchmark scenarios, ported
 
-`scenarios/local/benchmark/` stages the same four natural-language scenarios
-as `scenarios/benchmark/`, at the centre junction **(80, 80)** of the `grid`
-town instead of at Town10HD_Opt junctions 189 / 841 / 134:
+`scenarios/local/benchmark/` stages the same seven natural-language scenarios
+as `scenarios/benchmark/`. The four junction ones sit at the centre junction
+**(80, 80)** of the `grid` town instead of at Town10HD_Opt junctions
+189 / 841 / 134; the three highway ones sit on the `highway` and `two_lane`
+towns instead of on Town04 roads 40 and 51:
 
 ```bash
-./experiments/run_experiments_local.sh            # both policy arms, all four
+./experiments/run_experiments_local.sh            # both policy arms, all seven
 python experiments/make_report.py experiments/results_local -c experiments/benchmark_local.json
 ```
+
+The three highway ports differ from their originals **only in the stage**:
+every speed and every distance is the same number in both files, because none
+of them depends on junction topology. The one exception is the oncoming car's
+start position in `overtake`, which has to be measured off whichever road the
+pass happens on.
+
+### The three highway scenarios
+
+`lane_change`, `cut_in` and `overtake` are SafeBench-style highway conflicts,
+staged on **Town04**:
+
+| Scenario | Stage | Intent | Observed on CARLA (scripted) | Observed on localsim (scripted) |
+|---|---|---|---|---|
+| `lane_change` | road 40, westbound, 4 lanes | lead brakes hard; the ego changes into the one neighbouring lane that is occupied | collision at t = 5.25 s, partner `blocker` | t = 8.65 s, partners `blocker` then `lead` |
+| `cut_in` | road 40, westbound, 4 lanes | a faster car passes, cuts in ~7 m ahead, then slows | collision at t = 10.85 s, partner `hero` | t = 13.20 s, partner `hero` |
+| `overtake` | road 51, undivided two-way | the ego pulls out past a lorry into oncoming traffic | collision at t = 4.90 s, partners `oncoming` + `lorry` | t = 5.65 s, partner `oncoming` |
+
+Under `--ego-policy idm` **none** of the three collides, on either backend.
+That is not IDM being clever: it is IDM being longitudinal-only. It has a
+leader term, so it opens the gap the cut-in closes and holds one behind the
+braking lead; and it has no lateral action at all, so it never changes into
+the occupied lane and never pulls out into the oncoming one. These three
+scenarios therefore measure something the junction four cannot: whether a
+controller *takes* a lateral decision, and whether it checks the lane before
+committing to it.
+
+**Why `overtake` is not on the highway.** The Town04 highway is divided — the
+lane left of the innermost one is the median shoulder, and `change_lane`
+rejects a non-driving lane by type — so the oncoming carriageway is not
+reachable from it. An overtake into oncoming traffic needs an undivided road,
+and road 51 is the longest one in Town04 (216 m, a continuous ~90° bend; the
+urban grid alternatives are 40–56 m blocks between junctions, which is not
+enough road for three vehicles to accelerate from rest and meet). The local
+port uses the `two_lane` town for the same reason.
 
 ### Statistics: sweeping the IDM parameter space
 
@@ -248,12 +291,15 @@ python experiments/make_report.py experiments/results_local_sweep -c experiments
 
 [sweep_idm_local.py](experiments/sweep_idm_local.py) draws a Latin hypercube
 over the six IDM parameters (`v0`, `T`, `a_max`, `b`, `s0`, `delta`) and runs
-all four scenarios at each sample — 260 runs in about a minute on 12 cores.
+every scenario in `benchmark_local.json` at each sample — 260 runs in about a
+minute on 12 cores for the four junction scenarios, which is what the table
+below was measured on; adding the three highway ones takes it to 455.
 `--check-determinism` asserts the bit-identical-repeat property before the
 sweep starts. The scripted arm has no parameters and stays a single
 deterministic run per scenario: a reference point, not a distribution.
 
-Intended-conflict rate over 64 samples, with 95% Wilson intervals:
+Intended-conflict rate over 64 samples, with 95% Wilson intervals (the four
+junction scenarios; the highway three were added after this sweep was run):
 
 | Scenario | scripted | IDM | Most influential parameter |
 |---|---|---|---|
@@ -281,9 +327,16 @@ whether it yields to the crosser is incidental.
 | `right_turn` | `right` | ego rear-ended after turning right | collision at t = 9.35 s, partner `rear_ender` |
 | `left_turn` | `left` | oncoming car strikes the ego mid-turn | collision at t = 8.65 s, partner `oncoming` |
 | `stop_sign` | `straight` | precedence negotiated, nothing is hit | **no collision** — the pass condition |
+| `lane_change` | n/a (`highway` town) | ego changes into the occupied lane | collision at t = 8.65 s, partners `blocker`, `lead` |
+| `cut_in` | n/a (`highway` town) | ego rear-ends the car that cut in | collision at t = 13.20 s, partner `hero` |
+| `overtake` | n/a (`two_lane` town) | head-on while passing a lorry | collision at t = 5.65 s, partner `oncoming` |
+
+The three highway ports need no `--junction-turn`: nothing in them crosses a
+junction, which is the whole reason they transfer between the two backends
+with their numbers unchanged.
 
 The scripted arm produces the intended outcome, with the intended partner, in
-all four. Under `--ego-policy idm` only `left_turn` does: IDM is rear-ended by
+all seven. Under `--ego-policy idm` only `left_turn` does: IDM is rear-ended by
 its own follower in `red_light`, meets the wrong vehicle in `right_turn`, and
 is struck by the crosser in `stop_sign` — it has no term for a crossing
 conflict, so it does not yield.
@@ -393,7 +446,21 @@ NPC spawns ~25 m ahead, rotated 180°, then `ram(target: ego)` at full throttle.
 
 ## Coverage vs. the paper
 
-Implemented and used by the demos: `serial` / `parallel` / `one_of`, `wait` / `emit`, `drive`+`speed`, `keep_lane`, `change_speed`, `change_lane`, `set_lights`, `assign_celestial_position`, relative and absolute `position(…, at: start)`, physical units, `keep(it.field == literal)`, live `speed` / `ahead_of` / `object_distance`.
+Implemented and used by the demos: `serial` / `parallel` / `one_of`, `wait` / `emit`, `drive`+`speed`, `keep_lane`, `change_speed`, `change_lane`(+`speed`), `set_lights`, `assign_celestial_position`, relative and absolute `position(…, at: start)`, physical units, `keep(it.field == literal)`, live `speed` / `ahead_of` / `object_distance`.
+
+`change_lane` was in the registry from the start but was not exercised by any
+runnable scenario until the three highway ones. Making it work took three
+changes, all in `LaneChangeLite`: the walk to the target lane follows the
+requested **side** rather than lane-id arithmetic (the ids change sign across
+a centre line, so arithmetic cannot describe a move into oncoming traffic);
+`side:` is read in the **actor's** frame, since `get_left_lane()` is relative
+to the lane's direction and a car passing in the oncoming lane runs against
+it; and the manoeuvre completes only once the car is both on the new lane and
+pointing along it, because a leaf that hands over mid-yaw leaves the next
+action to inherit the drift. It also honours a `speed()` modifier now, with
+the same PID `drive()` uses — a fixed-throttle lane change takes a distance
+that depends on the gradient of the road, which a choreographed conflict
+cannot tolerate.
 
 Every one of those appears in the paper — in Table 2's capability checklist, in
 Listings 1–3, or both.

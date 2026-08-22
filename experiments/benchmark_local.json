@@ -1,7 +1,7 @@
 {
   "description": "Ego-policy swap experiment over scenarios/local/benchmark, run on the bundled local simulator (--backend pygame) instead of CARLA. Each scenario is run twice: once as compiled (the ego driven by its behaviour-tree timeline) and once with the ego's actuation handed to the IDM policy through the --ego-policy entry point. Everything else -- NPC timelines, events, monitors, spawn geometry -- is identical between the two arms, exactly as in benchmark.json.",
-  "relationship_to_benchmark_json": "These are ports, not the same runs. The .osc files stage the same four natural-language scenarios at the centre junction (80, 80) of the synthesised `grid` town rather than at Town10HD_Opt junctions 189/841/134. Absolute numbers are therefore not comparable with benchmark.json; the intended OUTCOME per scenario is, and that is what expect_collision encodes. See the header comment of each .osc for the per-scenario differences.",
-  "town": "grid",
+  "relationship_to_benchmark_json": "These are ports, not the same runs. The four junction .osc files stage their conflicts at the centre junction (80, 80) of the synthesised `grid` town rather than at Town10HD_Opt junctions 189/841/134, so their absolute numbers are not comparable with benchmark.json; the intended OUTCOME is, and that is what expect_collision encodes. The three highway files are closer than that: nothing in them crosses a junction, so every speed and distance is the same number as in the CARLA original and only the road under them changes (`highway` for lane_change and cut_in, `two_lane` for overtake, standing in for Town04 roads 40 and 51). See the header of each .osc for the per-scenario differences.",
+  "town": "grid (junction scenarios), highway / two_lane (highway scenarios)",
   "junction": [
     80.0,
     80.0
@@ -28,7 +28,7 @@
     "b": 2.0,
     "delta": 4.0,
     "s0": 2.0,
-    "note": "Library defaults, identical across all four scenarios, so the arm differs only in the controller and not in per-scenario tuning."
+    "note": "Library defaults, identical across all seven scenarios, so the arm differs only in the controller and not in per-scenario tuning."
   },
   "scenarios": [
     {
@@ -77,6 +77,46 @@
       "observed_scripted": {
         "first_collision_time": null,
         "peak_impulse": 0
+      }
+    },
+    {
+      "name": "lane_change",
+      "sim_duration": 20,
+      "junction_turn": "straight",
+      "town": "highway",
+      "intent": "The ego changes into the one neighbouring lane that is occupied, after the vehicle ahead brakes hard.",
+      "expect_collision": true,
+      "intended_partner": "blocker",
+      "observed_scripted": {
+        "first_collision_time": 8.65,
+        "peak_impulse": 12297,
+        "note": "partners blocker then lead: the side impact knocks the ego back into its own lane, where the braking lead still is"
+      }
+    },
+    {
+      "name": "cut_in",
+      "sim_duration": 20,
+      "junction_turn": "straight",
+      "town": "highway",
+      "intent": "A faster vehicle passes the ego, cuts in ~7 m ahead of it and slows; the ego runs into the back of it.",
+      "expect_collision": true,
+      "intended_partner": "hero",
+      "observed_scripted": {
+        "first_collision_time": 13.2,
+        "peak_impulse": 7858
+      }
+    },
+    {
+      "name": "overtake",
+      "sim_duration": 16,
+      "junction_turn": "straight",
+      "town": "two_lane",
+      "intent": "The ego pulls out past a slow lorry into the oncoming lane and meets an oncoming car head-on.",
+      "expect_collision": true,
+      "intended_partner": "oncoming",
+      "observed_scripted": {
+        "first_collision_time": 5.65,
+        "peak_impulse": 29621
       }
     }
   ],

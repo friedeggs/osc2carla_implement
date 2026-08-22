@@ -72,6 +72,43 @@ check("inner lane has an outer neighbour", right is not None
 check("outermost lane has no further neighbour",
       right is not None and right.get_right_lane() is None)
 
+# Across the centre line: the innermost lane's left neighbour is the oncoming
+# carriageway, as CARLA reports on an undivided road. This is what makes an
+# overtake expressible -- change_lane(side: left) has to find a lane there.
+opposing = wp.get_left_lane()
+check("innermost lane's left neighbour is the opposing carriageway",
+      opposing is not None and (opposing.lane_id > 0) != (wp.lane_id > 0),
+      repr(opposing))
+check("the opposing lane runs the other way",
+      opposing is not None
+      and abs(abs(opposing.transform.rotation.yaw
+                  - wp.transform.rotation.yaw) - 180.0) < 1e-6,
+      f"{opposing.transform.rotation.yaw} vs {wp.transform.rotation.yaw}")
+check("lanes report a CARLA-shaped lane_type",
+      str(wp.lane_type) == "Driving", repr(wp.lane_type))
+
+# The two towns the highway scenarios are staged on.
+highway = load_town("highway")
+hw = highway.get_waypoint(Location(200.0, 5.25, 0.0))
+check("highway: the ego lane has a lane on either side",
+      hw is not None and hw.get_left_lane() is not None
+      and hw.get_right_lane() is not None,
+      f"lane {hw.lane_id if hw else '?'}")
+ahead = hw.next(250.0) if hw is not None else []
+check("highway: 250 m further on is the same lane of the same road",
+      len(ahead) == 1 and ahead[0].road_id == hw.road_id
+      and ahead[0].lane_id == hw.lane_id and not ahead[0].is_junction,
+      repr(ahead))
+
+two_lane = load_town("two_lane")
+tl = two_lane.get_waypoint(Location(200.0, 1.75, 0.0))
+tl_left = tl.get_left_lane() if tl is not None else None
+check("two_lane: one lane each way, left neighbour is oncoming",
+      tl is not None and tl_left is not None
+      and tl.get_right_lane() is None
+      and (tl_left.lane_id > 0) != (tl.lane_id > 0),
+      f"lane {tl.lane_id if tl else '?'} -> {tl_left.lane_id if tl_left else None}")
+
 # --------------------------------------------------------------------------
 # 2. turn classification
 # --------------------------------------------------------------------------

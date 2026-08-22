@@ -153,6 +153,15 @@ class GridTown:
             for i, lane in enumerate(group):
                 lane.left = group[i - 1].uid if i > 0 else None
                 lane.right = group[i + 1].uid if i + 1 < len(group) else None
+        # Across the centre line the left neighbour of the innermost lane is
+        # the innermost lane of the opposing carriageway. CARLA reports the
+        # same on an undivided road -- get_left_lane() on lane -1 returns
+        # lane +1 -- and it is what makes an overtake into oncoming traffic
+        # expressible at all. (A divided road is the other case: on the Town04
+        # highway the same query returns the median shoulder, which a lane
+        # change rejects by type.)
+        forward[0].left = backward[0].uid
+        backward[0].left = forward[0].uid
 
     # -- assembly ---------------------------------------------------------
 
@@ -275,6 +284,24 @@ BUILTIN_TOWNS: Dict[str, GridTown] = {
                     "car-following demos never run out of road. No four-way "
                     "junction -- every corner is a two-arm turn.",
     ),
+    "highway": GridTown(
+        name="highway",
+        xs=(0.0, 500.0), ys=(0.0, 160.0),
+        lanes_per_dir=3,
+        description="Three lanes each way with ~470 m of straight between "
+                    "junctions -- the stand-in for the Town04 highway. The "
+                    "one to stage lane changes, cut-ins and any conflict that "
+                    "needs a lane on both sides of the ego.",
+    ),
+    "two_lane": GridTown(
+        name="two_lane",
+        xs=(0.0, 400.0), ys=(0.0, 120.0),
+        lanes_per_dir=1,
+        description="One lane each way, undivided, ~385 m of straight. The "
+                    "left neighbour of a lane here is oncoming traffic, which "
+                    "is what an overtake needs and a divided highway cannot "
+                    "provide.",
+    ),
     "wide_grid": GridTown(
         name="wide_grid",
         xs=(-80.0, 0.0, 80.0, 160.0), ys=(-80.0, 0.0, 80.0, 160.0),
@@ -291,9 +318,9 @@ TOWN_ALIASES: Dict[str, str] = {
     "town01": "grid",
     "town02": "grid",
     "town03": "wide_grid",
-    "town04": "loop",
+    "town04": "highway",
     "town05": "wide_grid",
-    "town06": "loop",
+    "town06": "highway",
     "town07": "grid",
     "town10hd": "grid",
     "town10hd_opt": "grid",

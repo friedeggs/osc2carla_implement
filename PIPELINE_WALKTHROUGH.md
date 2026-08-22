@@ -143,7 +143,7 @@ table decoupling the OSC2 ontology from the CARLA API. Each entry in
 | -------------------------------------------- | -------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
 | `vehicle.drive` + `speed(v)` modifier        | `WaypointFollowerLite` (line 38) | PID on speed (kp 0.6, ki 0.05, kd 0.1) → throttle/brake; steering from yaw error to a 5 m-lookahead OpenDRIVE waypoint. Never terminates. |
 | `vehicle.change_speed(target, rate_profile)` | `ChangeTargetSpeed` (line 112)   | `smooth` → P-controller (gain 0.4, capped 0.7); `asap` → bang-bang full throttle/brake. SUCCESS when                                      |
-| `vehicle.change_lane(num_of_lanes, side)`    | `LaneChangeLite` (line 162)      | resolves target lane id via `get_left/right_lane()`, steers toward it, SUCCESS after 8 m on the new lane.                                 |
+| `vehicle.change_lane(num_of_lanes, side)` + optional `speed(v)` | `LaneChangeLite`                 | resolves the target lane by stepping `num_of_lanes` neighbours to `side`, steers at a 6 m lookahead point **on that lane**, SUCCESS after 8 m on it *and* within 3° of its heading. `side:` is read in the actor's frame, and the lookahead is taken along the actor's direction of travel, so a change into an oncoming lane works. With `speed(v)`, the same PID as `drive()`; without it, a fixed throttle. |
 | `vehicle.ram(target)`                        | `RamTarget` (line 302)           | pure pursuit: every tick recompute bearing to the target's **current** location, full throttle.                                           |
 | `vehicle.set_lights(mode)`                   | `SetLights` (line 249)           | `carla.VehicleLightState` flags.                                                                                                          |
 | `environment.assign_celestial_position`      | `AssignCelestial` (line 285)     | sun azimuth/elevation via weather API.                                                                                                    |
@@ -267,6 +267,7 @@ capability checklist.
 | `keep_lane()` | ✓ | T2 *Spatial Modifiers* — added for this pass, see below |
 | `change_speed(target:, rate_profile:)` | ✓ | T2 *Speed control*; L2 line 84 |
 | `change_lane(num_of_lanes:, side:)` | ✓ | T2 *Lateral modifier*; L2 line 67 |
+| `change_lane(...) with: speed(v)` | ✓ | T2 *Lateral modifier* + *Speed control*, composed as any action + modifier |
 | `assign_position()` + `position(x,y,z,h)` | ✓ | T2 *Assign position/orientation*; L1 line 49 |
 | `position(distance:, ahead_of:/behind:)` | ✓ | T2 *Relative modifiers*, *Space gap*; L1 line 45 |
 | `set_lights(mode:)` | ✓ | L1 line 37, L2 lines 72–74 |
@@ -315,6 +316,45 @@ steers to that lane's centreline, re-latching on the way out of a junction
 implemented in `WaypointFollowerLite._hold_lane` using only `lane_id`,
 `is_junction` and `get_left_lane()`/`get_right_lane()`, so it works unchanged
 on both backends.
+
+### `change_lane`, made to work for this pass
+
+`change_lane` was registered from the start, and no runnable scenario used it:
+`hello_world.osc` and `nl2.osc` are the only files that did, and neither runs
+live. The three highway scenarios are lateral by definition, so the leaf had
+to be made to hold up. Four changes, all in `LaneChangeLite`:
+
+- **The walk to the target lane follows `side`, not lane-id arithmetic.** The
+  old code stepped `abs(target - current)` times in the direction of the sign
+  difference. Across a centre line the ids change sign, so from lane −1 to
+  lane +1 it walked *right* — the wrong way — and an overtake into oncoming
+  traffic could not be expressed at all.
+- **`side:` is read in the actor's frame.** `get_left_lane()` is relative to
+  the lane's own direction of travel, which for a car passing in the oncoming
+  lane is the opposite of its own. The manoeuvre asks for the driver's left,
+  so the leaf takes the sense from the actor's heading; a return leg out of
+  the oncoming lane therefore steers the right way.
+- **Steering aims at a lookahead point on the target lane**, walked in the
+  actor's direction of travel (`previous()` on a lane it is running against),
+  rather than at the abeam projection. The path becomes a blend rather than a
+  right-angle sidestep, and there is nothing left to jitter once the two
+  coincide.
+- **Completion needs alignment, not just distance.** SUCCESS now requires 8 m
+  on the new lane *and* a heading within 3° of it (with a 30 m bound so the
+  leaf always terminates). Handing over mid-yaw leaves the next action to
+  inherit the drift, and the next action is often `change_speed`, which
+  commands the wheels straight — enough to cross out of the lane just taken.
+
+A `speed(...)` modifier on `change_lane` is honoured with the same PID
+`drive()` uses. Without it the manoeuvre is a fixed-throttle one, so its
+duration depends on the gradient of the road — on Town04's highway, a 5%
+descent — and a choreographed conflict cannot tolerate that.
+
+Non-driving lanes are now rejected as targets: on the Town04 highway the lane
+left of the innermost one is the median shoulder, and CARLA hands it back from
+`get_left_lane()` like any other. The local simulator reports a `lane_type` of
+`Driving` for every synthesised lane, so the test is the same on both
+backends.
 
 ---
 

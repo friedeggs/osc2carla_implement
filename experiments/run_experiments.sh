@@ -47,11 +47,17 @@ if ! python -c "import carla" >/dev/null 2>&1; then
 fi
 
 # scenario:duration
+# The first four are junction scenarios on Town10HD_Opt, the last three highway
+# scenarios on Town04; the map comes from each .osc, so the server reloads
+# between the two groups.
 SCENARIOS=(
     "red_light:18"
     "right_turn:24"
     "left_turn:20"
     "stop_sign:26"
+    "lane_change:20"
+    "cut_in:20"
+    "overtake:16"
 )
 # policy_id:extra CLI args
 POLICIES=(

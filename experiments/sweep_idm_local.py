@@ -63,11 +63,11 @@ def latin_hypercube(n: int, seed: int) -> List[Dict[str, float]]:
     return out
 
 
-def run_one(scenario: str, duration: int, turn: str, tag: str,
+def run_one(scenario: str, duration: int, turn: str, town: str, tag: str,
             out_dir: str, policy_args: List[str], python: str) -> Tuple[str, int]:
     cmd = [python, "-m", "osc2carla",
            os.path.join("scenarios", "local", "benchmark", f"{scenario}.osc"),
-           "--backend", "pygame", "--town", "grid",
+           "--backend", "pygame", "--town", town,
            "--junction-turn", turn,
            "--render-mode", "off",
            "--record-actor", "ego",
@@ -96,28 +96,35 @@ def main(argv=None) -> int:
 
     with open(args.config) as fh:
         cfg = json.load(fh)
-    scenarios = [(s["name"], s["sim_duration"], s.get("junction_turn", "straight"))
+    # town matters as much as junction_turn: the junction scenarios are written
+    # against `grid`, the highway ones against `highway` / `two_lane`. Running
+    # one on the other's road network still runs -- the actors just land
+    # somewhere that stages nothing -- so the town has to come from the config
+    # rather than be assumed.
+    scenarios = [(s["name"], s["sim_duration"], s.get("junction_turn", "straight"),
+                  s.get("town", "grid"))
                  for s in cfg["scenarios"]]
     os.makedirs(args.out_dir, exist_ok=True)
 
     jobs: List[tuple] = []
     # scripted reference: one deterministic run per scenario
-    for name, dur, turn in scenarios:
-        jobs.append((name, dur, turn, f"{name}__scripted", []))
+    for name, dur, turn, town in scenarios:
+        jobs.append((name, dur, turn, town, f"{name}__scripted", []))
     # idm arm: one run per scenario per parameter sample
     samples = latin_hypercube(args.samples, args.seed)
     for i, params in enumerate(samples, start=1):
         pargs: List[str] = ["--ego-policy", "idm"]
         for k, v in sorted(params.items()):
             pargs += ["--policy-param", f"{k}={v}"]
-        for name, dur, turn in scenarios:
-            jobs.append((name, dur, turn, f"{name}__idm__r{i:03d}", pargs))
+        for name, dur, turn, town in scenarios:
+            jobs.append((name, dur, turn, town, f"{name}__idm__r{i:03d}", pargs))
 
     if args.check_determinism:
-        name, dur, turn = scenarios[0]
+        name, dur, turn, town = scenarios[0]
         seen = set()
         for k in range(3):
-            run_one(name, dur, turn, "determinism_probe", args.out_dir, [], args.python)
+            run_one(name, dur, turn, town, "determinism_probe", args.out_dir,
+                    [], args.python)
             with open(os.path.join(args.out_dir, "determinism_probe.json")) as fh:
                 d = json.load(fh)
             seen.add((d["first_collision_time"], d["peak_impulse"],
@@ -131,8 +138,8 @@ def main(argv=None) -> int:
     failures = 0
     done = 0
     with ThreadPoolExecutor(max_workers=args.jobs) as pool:
-        futs = [pool.submit(run_one, n, d, t, tag, args.out_dir, p, args.python)
-                for (n, d, t, tag, p) in jobs]
+        futs = [pool.submit(run_one, n, d, t, w, tag, args.out_dir, p, args.python)
+                for (n, d, t, w, tag, p) in jobs]
         for fut in futs:
             tag, rc = fut.result()
             done += 1

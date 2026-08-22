@@ -1,0 +1,193 @@
+import "domain.osc"
+
+# Overtake into oncoming traffic (Town04, two-way road 51).
+#
+# Natural-language scenario:
+#
+#   The ego comes up behind a slow lorry on an undivided two-way road, on a
+#   long bend.  It pulls out to pass, into the lane that carries traffic the
+#   other way.  A car is already coming the other way in that lane.  It does
+#   not slow down or move over, and it meets the ego head-on while the ego is
+#   out on the wrong side of the road.
+#
+# Not the highway, and why.  The Town04 highway is divided: at road 40 the lane
+# to the left of the innermost one is the median shoulder (lane +1, type
+# Shoulder), and change_lane rejects a non-driving lane by type, so the
+# oncoming carriageway is not reachable from it at all.  This scenario needs
+# what it says it needs -- a left neighbour that carries traffic the other way
+# -- and in Town04 that means the two-way network inside the highway loop.
+#
+# Road 51 is the pick: 216 m of undivided two-way road, both lanes Driving and
+# adjacent, flat (z = 0.03), and junction-free end to end.  It is the longest
+# such stretch in the map by a factor of four -- the alternatives are the
+# 40-56 m blocks between the junctions of the urban grid, and 56 m is not
+# enough road for three vehicles to accelerate from rest, close a gap and meet.
+# The price is that road 51 is not straight: it runs west out of junction 189
+# and sweeps ~90 deg right onto a northbound heading over its length, radius
+# about 108 m.  That is a fair place to stage this -- a blind bend is where
+# overtaking actually goes wrong -- but it means every absolute position in
+# this file carries its own heading, taken from the lane at that point.
+#
+# Stage geometry (distances are along road 51, from its eastern end):
+#
+#   d =  40   ego         lane -1  (151.68, -310.67)  h = -3.2498 rad
+#   d =  66   lorry       lane -1  (lead_gap ahead of the ego, placed
+#                                   topologically so it lands on the lane)
+#   d = 140   oncoming    lane +1  ( 75.04, -252.81)  h = -1.0897 rad
+#
+#      lane +1  <-- oncoming        (outside of the bend; the lane the ego takes)
+#      -------------------------- centre line
+#      lane -1  ego --> lorry -->   (the ego's own lane)
+#
+# Actors (3 vehicles):
+#   ego       Tesla Model 3 (camera vehicle), lane -1.
+#   lorry     European HGV, lead_gap ahead of the ego in the same lane at
+#             v_lorry.  It is the reason to overtake: slow, long, and opaque.
+#   oncoming  Dodge Charger in lane +1 at v_oncoming, closing head-on.
+#
+# Timeline:
+#   t = 0            all three spawn at rest, launch on @go_signal.
+#   t ~ 0-3          the ego, much quicker off the mark than a 12 t lorry,
+#                    eats the gap.
+#   gap<commit_gap   monitor emits EGO_COMMITTED; the ego pulls out with
+#                    change_lane(side: left) at v_pass.  The oncoming car
+#                    registers the pull-out and holds its line.
+#   contact          the two meet head-on with the ego on the wrong side of
+#                    the road, alongside the lorry.
+#   t = 16           termination guard.
+#
+# What happens after the contact is not part of the scenario, and the file does
+# not pretend otherwise: there is no return leg.  Holding a lane against its
+# own direction is not expressible in this baseline -- drive() steers toward
+# waypoint.next() of whatever lane it is on, and in the oncoming lane that
+# point is *behind* the car -- so a pass can be started here but not finished.
+# change_lane itself is direction-aware (it reads `side:` in the actor's frame,
+# so a return leg would steer the right way), but the cruise between the two
+# legs has nothing to hold the lane with.
+#
+# No ram().  The oncoming car keeps executing drive() with keep_lane() at its
+# declared speed: a vehicle that does not change what it is doing is a vehicle
+# that does not give way.  See PIPELINE_WALKTHROUGH, "Construct provenance".
+#
+# Observed on CARLA 0.9.16 (Town04): first contact at t = 4.90 s, ~139 collision
+# events, peak impulse ~32000, partners `oncoming` and `lorry` -- the head-on
+# lands while the ego is still level with the lorry, and shoves it into the
+# lorry as well.  The wreck then slides into the roadside wall on the outside
+# of the bend, which shows up as static contacts (~45); metrics.py reports
+# those apart from the verdict, because scenery is not a scenario outcome.
+# Under --ego-policy idm: no collision; IDM never pulls out, so it simply
+# follows the lorry (min_leader_gap 19.6 m).  Exact counts shift with CARLA
+# build and physics substepping; the intended outcome is the head-on with
+# `oncoming`.
+#
+# The local port (scenarios/local/benchmark/overtake.osc) carries every speed
+# and distance unchanged; only the oncoming car's start position differs, and
+# only because that stage is a 385 m straight rather than this bend.
+
+scenario overtake:
+    carla_map: map with:
+        keep(it.map_file == "Town04")
+
+    env: environment
+
+    # Declared first: the lorry is placed topologically relative to the ego,
+    # which on a bend is the only sane way to say "26 m up the road".
+    ego: vehicle with:
+        keep(it.name == "ego")
+        keep(it.model == "vehicle.tesla.model3")
+
+    lorry: vehicle with:
+        keep(it.name == "lorry")
+        keep(it.model == "vehicle.carlamotors.european_hgv")
+        keep(it.color == "40,100,60")
+
+    oncoming: vehicle with:
+        keep(it.name == "oncoming")
+        keep(it.model == "vehicle.dodge.charger_2020")
+        keep(it.color == "160,20,20")
+
+    # --- Speeds ---
+    var v_ego: speed = 48kph
+    # Passing speed: the whole point of pulling out is to go faster than the
+    # thing being passed.
+    var v_pass: speed = 58kph
+    var v_lorry: speed = 25kph
+    var v_oncoming: speed = 45kph
+
+    # --- Distances ---
+    var lead_gap: length = 26m
+    # Centre-to-centre. The HGV is 11.3 m long, so this is ~5 m of clear road
+    # in front of the ego when it decides to pull out.
+    var commit_gap: length = 13m
+
+    do parallel:
+        env.assign_celestial_position(azimuth: 0deg, elevation: 65deg)
+
+        # ---- EGO: pull out into the oncoming lane ----
+        serial:
+            ego.assign_position() with:
+                position(x: 151.68, y: -310.67, z: 0.03, h: -3.2498rad, at: start)
+                speed(0kph, at: start)
+
+            wait @go_signal
+
+            one_of:
+                ego.drive() with:
+                    speed(v_ego)
+                    keep_lane()
+                wait @EGO_COMMITTED
+
+            # Into the oncoming lane. Nothing in the manoeuvre asks what is
+            # already in it.
+            ego.change_lane(num_of_lanes: 1, side: left) with:
+                speed(v_pass)
+            emit EGO_IN_ONCOMING_LANE
+
+            # The contact lands inside the manoeuvre above. See the header for
+            # why nothing here tries to complete the pass.
+            wait elapsed(8s)
+
+        # ---- LORRY: slow, long, and holding its lane ----
+        serial:
+            lorry.assign_position() with:
+                position(distance: lead_gap, ahead_of: ego, at: start)
+                speed(0kph, at: start)
+
+            wait @go_signal
+
+            one_of:
+                lorry.drive() with:
+                    speed(v_lorry)
+                    keep_lane()
+                wait elapsed(15s)
+
+        # ---- ONCOMING: has the lane, and does not give it up ----
+        serial:
+            oncoming.assign_position() with:
+                position(x: 75.04, y: -252.81, z: 0.03, h: -1.0897rad, at: start)
+                speed(0kph, at: start)
+
+            wait @go_signal
+
+            one_of:
+                oncoming.drive() with:
+                    speed(v_oncoming)
+                    keep_lane()
+                wait @EGO_COMMITTED
+
+            # Holds its line into the car coming up its own lane.
+            emit ONCOMING_HELD_LINE
+            one_of:
+                oncoming.drive() with:
+                    speed(v_oncoming)
+                    keep_lane()
+                wait elapsed(10s)
+
+        # ---- Monitor: has the ego run out of room behind the lorry? ----
+        serial:
+            wait @go_signal
+            wait rise(ego.object_distance(reference: lorry, direction: euclidean) < commit_gap)
+            emit EGO_COMMITTED
+
+        # ---- Termination guard ----
+        wait elapsed(16s)

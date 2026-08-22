@@ -39,13 +39,16 @@ fi
 
 mkdir -p "${OUT_DIR}"
 
-# scenario:duration:junction-turn  (see benchmark_local.json for why each
-# scenario needs its own manoeuvre preference)
+# scenario:duration:junction-turn:town  (see benchmark_local.json for why each
+# scenario needs its own manoeuvre preference and its own road network)
 SCENARIOS=(
-    "red_light:18:straight"
-    "right_turn:24:right"
-    "left_turn:20:left"
-    "stop_sign:26:straight"
+    "red_light:18:straight:grid"
+    "right_turn:24:right:grid"
+    "left_turn:20:left:grid"
+    "stop_sign:26:straight:grid"
+    "lane_change:20:straight:highway"
+    "cut_in:20:straight:highway"
+    "overtake:16:straight:two_lane"
 )
 POLICIES=(
     "scripted:"
@@ -55,10 +58,7 @@ POLICIES=(
 REPEATS="${REPEATS:-1}"
 fail=0
 for entry in "${SCENARIOS[@]}"; do
-    name="${entry%%:*}"
-    rest="${entry#*:}"
-    dur="${rest%%:*}"
-    turn="${rest##*:}"
+    IFS=: read -r name dur turn town <<<"${entry}"
     for pol in "${POLICIES[@]}"; do
         pid="${pol%%:*}"
         pargs="${pol#*:}"
@@ -68,10 +68,10 @@ for entry in "${SCENARIOS[@]}"; do
             else
                 tag="${name}__${pid}"
             fi
-            echo "=== ${tag} (${dur}s, --junction-turn ${turn}) ==="
+            echo "=== ${tag} (${dur}s, --town ${town}, --junction-turn ${turn}) ==="
             # shellcheck disable=SC2086
             set -- "${PYTHON}" -m osc2carla "scenarios/local/benchmark/${name}.osc" \
-                --backend pygame --town grid --junction-turn "${turn}" \
+                --backend pygame --town "${town}" --junction-turn "${turn}" \
                 --sim-duration "${dur}" \
                 --record-actor ego \
                 --metrics-out "${OUT_DIR}/${tag}.json" \

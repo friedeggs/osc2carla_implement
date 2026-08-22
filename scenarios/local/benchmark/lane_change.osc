@@ -1,0 +1,220 @@
+import "domain.osc"
+
+# Lane change into an occupied lane -- LOCAL SIMULATOR port of
+# scenarios/benchmark/lane_change.osc.
+#
+#   python -m osc2carla scenarios/local/benchmark/lane_change.osc \
+#       --backend pygame --town highway --sim-duration 20
+#
+# Natural-language scenario, unchanged from the CARLA original:
+#
+#   The ego is cruising the middle lane of a three-lane carriageway when the
+#   vehicle ahead of it brakes hard.  Both neighbouring lanes are legally
+#   available, but one of them is occupied by a vehicle running level with the
+#   ego.  The ego changes into that one.  The occupant does not move over or
+#   brake, and the two make contact side to side.
+#
+# Stage geometry -- the y = 0 carriageway of the `highway` town, eastbound,
+# x in [14.5, 485.5]:
+#
+#      lane -1  y = 1.75   blocker  ->        <- the lane the ego takes
+#      lane -2  y = 5.25   ego -> ... lead ->    (the ego's own lane)
+#      lane -3  y = 8.75   outer ->              (free: the way out not taken)
+#      -------------------------------------- centre line
+#      lane +1..+3         (opposing carriageway, unused)
+#
+#   * The choice is the point of the scenario.  A hard-braking lead with two
+#     open lanes beside it is not yet a conflict; it becomes one because the
+#     lane the ego picks is the one with a car in it, and the other one is
+#     empty for the whole run.
+#
+# Actors (4 vehicles):
+#   ego      Tesla Model 3 (camera vehicle), middle lane.
+#   lead     Mercedes coupe, lead_gap ahead of the ego in the same lane;
+#            brakes hard to v_lead_braked when the ego has closed to
+#            brake_gap.
+#   blocker  Dodge Charger in the left lane, 6 m ahead of the ego and a shade
+#            slower, so the ego draws level with it over the approach and is
+#            beside it at the moment it decides to change lane.
+#   outer    Seat Leon in the right lane, well behind and slower: background
+#            traffic that never reaches the conflict.  The right lane is the
+#            escape the ego does not take.
+#
+# Timeline:
+#   t = 0        all four spawn at rest, launch on @go_signal.
+#   t ~ 0-6      everyone accelerates to their setpoint; the ego closes on the
+#                lead at v_ego - v_lead.
+#   gap<brake_gap   monitor emits LEAD_BRAKING; the lead brakes asap to
+#                v_lead_braked.  The gap now collapses at ~12 m/s.
+#   gap<swerve_gap  monitor emits EGO_SWERVING; the ego commits to the left
+#                lane with change_lane(side: left).
+#   contact      the blocker holds its line -- it keeps driving its own lane at
+#                its own speed, and drive() has no yielding term -- so the ego
+#                arrives in an occupied lane.  Side contact.
+#   t = 20       termination guard.
+#
+# How "holds its line" is expressed, and why there is no ram():  as in the
+# four junction scenarios, the antagonist keeps executing drive() with
+# keep_lane() at its declared speed.  A vehicle that does not change what it
+# is doing is a vehicle that does not give way.
+#
+# Differences from the CARLA original: only the stage.  Every speed and every
+# distance is the same number in both files; what changes is the road under
+# them -- three lanes each way instead of four, flat instead of a 5% descent,
+# and this town's absolute coordinates.
+#
+# What the stage does to the outcome.  Everything happens later here: CARLA's
+# cars accelerate harder and reach the trigger sooner (contact at 5.25 s there
+# against 8.65 s here).  It also does not stop at one contact.  The side
+# impact knocks the ego back into its own lane still carrying ~50 kph, and the
+# lead is by then down to 8 kph, so the ego reaches that too -- partners are
+# `blocker` and then `lead`.  The first contact, and the one the scenario is
+# about, is the blocker; the second is what a failed swerve costs.
+#
+# Expected on the local backend: collision_occurred = true, first contact at
+# t = 8.65 s, peak impulse ~12300, partners blocker and lead.  Under
+# --ego-policy idm: no collision at all -- IDM has a leader term, holds a
+# 29 m gap to the braking lead, and never changes lane, so it never arrives in
+# the occupied one.
+
+scenario lane_change:
+    carla_map: map with:
+        keep(it.map_file == "highway")
+
+    env: environment
+
+    # Declared first: lead is placed topologically relative to the ego, and
+    # the initializer resolves relative placement against the spawn transform
+    # of an already-spawned binding.
+    ego: vehicle with:
+        keep(it.name == "ego")
+        keep(it.model == "vehicle.tesla.model3")
+
+    lead: vehicle with:
+        keep(it.name == "lead")
+        keep(it.model == "vehicle.mercedes.coupe")
+        keep(it.color == "200,200,200")
+
+    blocker: vehicle with:
+        keep(it.name == "blocker")
+        keep(it.model == "vehicle.dodge.charger_2020")
+        keep(it.color == "160,20,20")
+
+    outer: vehicle with:
+        keep(it.name == "outer")
+        keep(it.model == "vehicle.seat.leon")
+        keep(it.color == "0,90,160")
+
+    # --- Speeds ---
+    var v_ego: speed = 54kph
+    var v_lead: speed = 45kph
+    # What "hard brake" means here: rate_profile asap is full brake until the
+    # target is reached, so the number is the speed it ends at, not the rate.
+    var v_lead_braked: speed = 8kph
+    # A shade under the ego, which is what closes the small head start below
+    # into "abeam" by the time the ego runs out of room.
+    var v_blocker: speed = 52kph
+    var v_outer: speed = 40kph
+
+    # --- Distances ---
+    var lead_gap: length = 34m
+    # The lead brakes when the ego has closed to here ...
+    var brake_gap: length = 26m
+    # ... and the ego gives up on its own lane here.
+    var swerve_gap: length = 20m
+
+    do parallel:
+        env.assign_celestial_position(azimuth: 0deg, elevation: 65deg)
+
+        # ---- EGO: cruise, then change into the left lane ----
+        serial:
+            ego.assign_position() with:
+                position(x: 40.00, y: 5.25, z: 0.00, h: 0.0rad, at: start)
+                speed(0kph, at: start)
+
+            wait @go_signal
+
+            one_of:
+                ego.drive() with:
+                    speed(v_ego)
+                wait @EGO_SWERVING
+
+            # Committed. The left lane is occupied; nothing in the manoeuvre
+            # checks that, which is the failure being staged.
+            ego.change_lane(num_of_lanes: 1, side: left) with:
+                speed(v_ego)
+            emit EGO_IN_LEFT_LANE
+
+            one_of:
+                ego.drive() with:
+                    speed(v_ego)
+                    keep_lane()
+                wait elapsed(11s)
+
+        # ---- LEAD: hard brake in the ego's lane ----
+        serial:
+            lead.assign_position() with:
+                position(distance: lead_gap, ahead_of: ego, at: start)
+                speed(0kph, at: start)
+
+            wait @go_signal
+
+            one_of:
+                lead.drive() with:
+                    speed(v_lead)
+                wait @LEAD_BRAKING
+
+            lead.change_speed(target: v_lead_braked, rate_profile: asap)
+            emit LEAD_BRAKED
+
+            one_of:
+                lead.drive() with:
+                    speed(v_lead_braked)
+                    keep_lane()
+                wait elapsed(13s)
+
+        # ---- BLOCKER: occupies the lane the ego wants, and keeps it ----
+        serial:
+            blocker.assign_position() with:
+                position(x: 46.00, y: 1.75, z: 0.00, h: 0.0rad, at: start)
+                speed(0kph, at: start)
+
+            wait @go_signal
+
+            one_of:
+                blocker.drive() with:
+                    speed(v_blocker)
+                wait @EGO_SWERVING
+
+            # Holds its line into the arriving ego rather than making room.
+            emit BLOCKER_HELD_LINE
+            one_of:
+                blocker.drive() with:
+                    speed(v_blocker)
+                    keep_lane()
+                wait elapsed(13s)
+
+        # ---- OUTER: background traffic in the lane that stays free ----
+        serial:
+            outer.assign_position() with:
+                position(x: 16.00, y: 8.75, z: 0.00, h: 0.0rad, at: start)
+                speed(0kph, at: start)
+
+            wait @go_signal
+
+            one_of:
+                outer.drive() with:
+                    speed(v_outer)
+                    keep_lane()
+                wait elapsed(19s)
+
+        # ---- Monitor: the closing gap to the lead drives both triggers ----
+        serial:
+            wait @go_signal
+            wait rise(ego.object_distance(reference: lead, direction: euclidean) < brake_gap)
+            emit LEAD_BRAKING
+            wait rise(ego.object_distance(reference: lead, direction: euclidean) < swerve_gap)
+            emit EGO_SWERVING
+
+        # ---- Termination guard ----
+        wait elapsed(20s)

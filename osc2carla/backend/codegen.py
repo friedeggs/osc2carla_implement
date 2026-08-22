@@ -9,7 +9,7 @@ hand instead of invoking ``python -m osc2carla``.
 from __future__ import annotations
 
 from io import StringIO
-from typing import List
+from typing import List, Optional
 
 from ..frontend import nodes
 from ..middle import AnnotatedScenario
@@ -187,6 +187,18 @@ def _emit_member(member, indent: int) -> str:
     return "py_trees.behaviours.Success(name='Noop')"
 
 
+def _speed_modifier_repr(mods) -> Optional[str]:
+    """Source for a ``speed(...)`` modifier's setpoint, or None if absent."""
+    for m in mods:
+        if m.name != "speed":
+            continue
+        if m.args.positional:
+            return _expr_repr(m.args.positional[0])
+        if "target" in m.args.named:
+            return _expr_repr(m.args.named["target"])
+    return None
+
+
 def _emit_action_call(action: nodes.ActionCall) -> str:
     """Emit a direct constructor call for the atomic behaviour, mirroring
     the dispatch logic in atomic_behaviors.py."""
@@ -199,14 +211,10 @@ def _emit_action_call(action: nodes.ActionCall) -> str:
         target = _expr_repr(args.named["target"]) if "target" in args.named else "None"
         return f"RamTarget({actor}, {target}, ctx, name='Ram[{actor}->{_arg_name(args.named.get('target'))}]')"
     if name in ("drive",):
-        v = "0.0"
-        for m in mods:
-            if m.name == "speed":
-                if m.args.positional:
-                    v = _expr_repr(m.args.positional[0])
-                elif "target" in m.args.named:
-                    v = _expr_repr(m.args.named["target"])
-        return f"WaypointFollowerLite({actor}, {v}, ctx, name='Drive[{actor}]')"
+        v = _speed_modifier_repr(mods) or "0.0"
+        keep_lane = any(m.name == "keep_lane" for m in mods)
+        return (f"WaypointFollowerLite({actor}, {v}, ctx, "
+                f"name='Drive[{actor}]', keep_lane={keep_lane!r})")
     if name in ("change_speed",):
         tgt = _expr_repr(args.named.get("target", nodes.NumLit(0.0)))
         prof = "smooth"
@@ -218,9 +226,14 @@ def _emit_action_call(action: nodes.ActionCall) -> str:
                 f"name='ChangeSpeed[{actor}]')")
     if name in ("change_lane",):
         n = _expr_repr(args.named.get("num_of_lanes", nodes.NumLit(1, True)))
-        side = _expr_repr(args.named.get("side", nodes.Identifier("right")))
+        # `side: left` is an enum member, not a variable: emitting it as a bare
+        # name would be a NameError in the generated script.
+        side_expr = args.named.get("side", nodes.Identifier("right"))
+        side = repr(side_expr.name) if isinstance(side_expr, nodes.Identifier) \
+            else _expr_repr(side_expr)
+        v = _speed_modifier_repr(mods)
         return (f"LaneChangeLite({actor}, int({n}), str({side}), ctx, "
-                f"name='LaneChange[{actor}]')")
+                f"v_setpoint={v or 'None'}, name='LaneChange[{actor}]')")
     if name in ("set_lights",):
         mode = _expr_repr(args.named.get("mode", nodes.StringLit("auto")))
         return f"SetLights({actor}, str({mode}), name='SetLights[{actor}]')"
