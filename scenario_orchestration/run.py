@@ -75,6 +75,8 @@ REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 METHOD_RESULT_FILE = "method_result.json"
 METRICS_FILE = "osc2carla_metrics.json"
+#: What the policy bridge writes about the observation it actually served.
+POLICY_NOTES_FILE = "policy_bridge.json"
 LOG_FILE = "osc2carla.log"
 
 #: Backend -> where its scenarios and their declared intent live.
@@ -439,7 +441,8 @@ def native_parameter_names(policy: str) -> Sequence[str]:
         return NATIVE_PARAMETERS.get(policy, ())
 
 
-def build_policy_plan(policy_request: Dict[str, Any], request_path: str
+def build_policy_plan(policy_request: Dict[str, Any], request_path: str,
+                      output_dir: str
                       ) -> Tuple[List[str], Dict[str, str], Dict[str, Any]]:
     """``(cli args, extra env, notes)`` for the requested ego policy.
 
@@ -466,14 +469,17 @@ def build_policy_plan(policy_request: Dict[str, Any], request_path: str
         )
     if observation_space != "state":
         raise RequestError(
-            "policy %r wants a %r observation space; this runtime hands the ego "
-            "policy state only (pose, speed, sampled route, closest leader) and "
-            "renders no sensor stream" % (name or implementation, observation_space)
+            "policy %r wants a %r observation space; this runtime describes the "
+            "scene as state -- ego pose and speed, object-centric actors, route, "
+            "signals and a BEV raster on the CARLA backend -- and renders no "
+            "sensor stream" % (name or implementation, observation_space)
         )
-    if action_space != "control":
+    if action_space not in ("control", "waypoints"):
         raise RequestError(
             "policy %r emits %r; this runtime applies normalised control "
-            "(throttle, brake, steer) and has no %s follower"
+            "(throttle, brake, steer), and accepts a waypoint policy through the "
+            "control its own controllers return alongside its waypoints. There is "
+            "no %s follower here"
             % (name or implementation, action_space, action_space)
         )
 
@@ -514,7 +520,9 @@ def build_policy_plan(policy_request: Dict[str, Any], request_path: str
     return (
         ["--ego-policy", BRIDGE_POLICY],
         {"OSC2CARLA_POLICY_REQUEST": os.path.abspath(request_path),
-         "OSC2CARLA_POLICY_ENTRY_POINT": entry_point},
+         "OSC2CARLA_POLICY_ENTRY_POINT": entry_point,
+         "OSC2CARLA_POLICY_NOTES": os.path.join(os.path.abspath(output_dir),
+                                                POLICY_NOTES_FILE)},
         {"policy_mode": "bridged",
          "policy_entry_point": entry_point,
          "policy_note": "loaded through "
@@ -753,7 +761,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         duration, duration_source = resolve_duration(evaluation, intent, parameters)
         fixed_dt = resolve_fixed_dt(evaluation, parameters)
         policy_args, policy_env, policy_notes = build_policy_plan(
-            policy_request, args.policy_request)
+            policy_request, args.policy_request, output_dir)
     except RequestError as exc:
         return write_result(output_dir, "failure", method_metrics=context,
                             reason=str(exc))
@@ -829,6 +837,16 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     near_gap = _env_float("OSC2CARLA_NEAR_COLLISION_M") or DEFAULT_NEAR_COLLISION_M
     context["near_collision_gap_m"] = near_gap
     context["metrics_path"] = METRICS_FILE
+    # What the bridge served the policy: which observation shape, which BEV
+    # raster, whether the route ran short. A BEV substitution changes what a
+    # number means, so it travels with the number.
+    notes_path = os.path.join(output_dir, POLICY_NOTES_FILE)
+    if os.path.exists(notes_path):
+        try:
+            with open(notes_path) as fh:
+                context["policy_bridge"] = json.load(fh)
+        except (OSError, ValueError) as exc:
+            context["policy_bridge"] = {"unreadable": str(exc)}
     context["log_path"] = LOG_FILE
     if not _env_flag("OSC2CARLA_RECORD_VIDEO"):
         context["video_path"] = None
