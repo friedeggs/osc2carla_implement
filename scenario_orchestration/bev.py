@@ -31,12 +31,28 @@ ships. The suffix selects which *props and buildings* are loadable, not which
 road network: the OpenDRIVE geometry the raster is drawn from is the same. So the
 suffix is stripped, and the substitution is recorded in ``describe()`` so it
 appears in the run report rather than happening silently.
+Dumping what the policy saw
+---------------------------
+`$SCENARIO_ORCHESTRATION_BEV_DUMP` names a directory. When set, every raster this
+source hands over is written there as `bev_<n>.npy` -- the raw class indices,
+before the policy colourises them, because the raw raster is what the checkpoint
+was trained against and the colourisation is the policy's own business.
+
+Off by default and free when off. It exists because the raster is otherwise the
+one input to a run that leaves no trace: produced per tick and discarded, so a run
+whose driving looks wrong cannot afterwards be asked what the policy was looking
+at.
 """
+
 from __future__ import annotations
 
 import os
 import sys
 from typing import Any, Dict, List, Optional
+
+
+#: Distinguishes "not looked up yet" from "looked up, absent".
+_UNSET = object()
 
 
 class BevError(Exception):
@@ -87,6 +103,8 @@ class CarlaGarageBev:
         self.repository = str(repository)
         self.map_folder = str(map_folder)
         self.calls = 0
+        self._dump = _UNSET
+        self._dump_warned = False
         self.town: Optional[str] = None
         self.raster_town: Optional[str] = None
         self._manager = None
@@ -173,7 +191,36 @@ class CarlaGarageBev:
             raise BevError("the BEV renderer failed: %s: %s"
                            % (type(exc).__name__, exc)) from exc
         self.calls += 1
-        return observation["bev_semantic_classes"]
+        raster = observation["bev_semantic_classes"]
+        self._write_raster(raster)
+        return raster
+
+    # ------------------------------------------------------------------ #
+    def _dump_dir(self):
+        """Where to write rasters, or None. Resolved once, then cached."""
+        if self._dump is _UNSET:
+            path = os.environ.get("SCENARIO_ORCHESTRATION_BEV_DUMP") or None
+            if path:
+                try:
+                    os.makedirs(path, exist_ok=True)
+                except OSError:
+                    path = None
+            self._dump = path
+        return self._dump
+
+    def _write_raster(self, raster) -> None:
+        """Persist one raster. Never fails the run: this is instrumentation."""
+        directory = self._dump_dir()
+        if not directory:
+            return
+        try:
+            import numpy as np
+            np.save(os.path.join(directory, "bev_%05d.npy" % self.calls),
+                    np.asarray(raster, dtype="uint8"))
+        except Exception as exc:                       # noqa: BLE001
+            if not self._dump_warned:
+                self._dump_warned = True
+                sys.stderr.write("[bev] could not dump raster: %s\n" % exc)
 
     def describe(self) -> Dict[str, Any]:
         note = None
