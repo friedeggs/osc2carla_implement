@@ -16,6 +16,14 @@ recorder uses, so the two methods' videos can be read side by side.
 The top view follows the ego rather than centring on a junction, because three of
 the six families are highway scenarios with no junction to centre on.
 
+Street trees sit between an overhead camera and the road, and on Town10HD_Opt they
+hide exactly what the top view is for. CARLA's layered maps -- the ``_Opt`` builds --
+can unload their foliage, so ``$OSC2CARLA_TOP_CLEAR_FOLIAGE=1`` does that for the
+recording. It is off by default and reported when used, because it changes the
+world the run happened in: the geometry a camera sees is not separable from the
+geometry an actor can collide with, and a video should not quietly depict a
+different world from the one the numbers came from.
+
 Every synchronous tick both frames are grabbed and the pair is overlaid with the
 collision count and last impulse magnitude; at ``finalize`` the frames are encoded
 into an MP4 via ffmpeg. Set ``$OSC2CARLA_RECORD_VIEW=chase`` for the single-camera
@@ -66,6 +74,8 @@ class Recorder:
         #: junction and its approaches in frame without shrinking the vehicles to
         #: specks.
         self._top_span = float(os.environ.get("OSC2CARLA_TOP_SPAN") or 60.0)
+        #: Layers dropped for the recording, reported by `notes`.
+        self._cleared: List[str] = []
         self._collisions: List[dict] = []
         self._frame_idx = 0
         self._sim_time = 0.0
@@ -109,11 +119,42 @@ class Recorder:
                                 carla.Rotation(pitch=-90.0, yaw=-90.0)),
                 attach_to=target_actor)
             self._top.listen(self._top_queue.put)
+            if os.environ.get("OSC2CARLA_TOP_CLEAR_FOLIAGE") in ("1", "true", "True"):
+                self._clear_foliage(world)
 
         if record_collisions:
             col_bp = bps.find("sensor.other.collision")
             self._col = world.spawn_actor(col_bp, carla.Transform(), attach_to=target_actor)
             self._col.listen(self._on_collision)
+
+    def _clear_foliage(self, world) -> None:
+        """Unload foliage so the overhead camera can see the road.
+
+        Only the layered ``_Opt`` maps support this; on a non-layered map the call
+        raises and is reported rather than silently doing nothing, so a video from
+        Town05 is not mistaken for one where the request took effect.
+        """
+        for name in ("Foliage", "ParkedVehicles"):
+            layer = getattr(carla.MapLayer, name, None) if carla else None
+            if layer is None:
+                continue
+            try:
+                world.unload_map_layer(layer)
+                world.tick()
+                self._cleared.append(name)
+            except Exception as exc:                       # noqa: BLE001
+                print("[recorder] could not unload %s (map may not be layered): %s"
+                      % (name, exc))
+        if self._cleared:
+            print("[recorder] unloaded for the recording: %s -- the world the video "
+                  "shows differs from the default in these layers"
+                  % ", ".join(self._cleared))
+
+    def notes(self) -> dict:
+        """What the recording did that the run would not otherwise have done."""
+        return {"view": self._view,
+                "top_span_m": self._top_span if self._view == "both" else None,
+                "layers_unloaded": list(self._cleared)}
 
     def _to_bgr(self, image):
         """One CARLA image as an H x W x 3 BGR array."""
