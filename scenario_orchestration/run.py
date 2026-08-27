@@ -581,8 +581,20 @@ def build_command(scenario_path: str, backend: str, town: Optional[str],
             command += ["--town", town]
     if _env_flag("OSC2CARLA_RECORD_VIDEO"):
         command += ["--record-video", os.path.join(output_dir, family + ".mp4"),
-                    "--record-fps", "20", "--record-width", "1280",
-                    "--record-height", "720"]
+                    # One frame is captured per simulation tick, so the
+                    # container's frame rate has to be the tick rate or the video
+                    # misrepresents time: at fixed_dt=0.1 the sim runs at 10 Hz,
+                    # and stamping 20 fps made an 18.1 s episode play in 9 s. For
+                    # a recording whose point is to show whether the ego braked in
+                    # time, playing at 2x is not a cosmetic problem.
+                    "--record-fps", "%g" % max(1.0, round(1.0 / fixed_dt, 3)),
+                    # Per *pane*. The recorder composites a top-down and a chase
+                    # view side by side, so the file is twice this wide -- 1440x540,
+                    # which is the geometry the orchestration method's recorder
+                    # produces. Matching it means the two methods' videos can be
+                    # put next to each other without rescaling one of them.
+                    "--record-width", "720",
+                    "--record-height", "540"]
         if backend == "pygame":
             command += ["--render-mode", "headless"]
     elif backend == "pygame":
