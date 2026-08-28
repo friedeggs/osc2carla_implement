@@ -563,6 +563,15 @@ def build_command(scenario_path: str, backend: str, town: Optional[str],
                "--backend", "pygame" if backend == "pygame" else "carla",
                "--fixed-dt", "%r" % fixed_dt,
                "--metrics-out", os.path.join(output_dir, METRICS_FILE)]
+    if not _env_flag("OSC2CARLA_NO_TRACE"):
+        # The per-tick canonical trace the harness's metrics package evaluates.
+        # On by default and only suppressible by hand: unlike video it costs no
+        # rendering, and the harness cannot compute scenario success without
+        # it. The rate is the protocol's evaluation tick rate, not the physics
+        # rate.
+        command += ["--trace-out", output_dir,
+                    "--trace-rate-hz",
+                    _env("OSC2CARLA_TRACE_RATE_HZ") or "10"]
     if ego_binding:
         # Which binding the metrics measure, and which one an ego policy takes
         # over; osc2carla falls back to the first vehicle in the file.

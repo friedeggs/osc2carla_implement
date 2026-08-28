@@ -181,6 +181,14 @@ def main(argv: Optional[List[str]] = None) -> int:
                         metavar="K=V",
                         help="Policy parameter override, repeatable "
                              "(e.g. --policy-param v0=8.3).")
+    parser.add_argument("--trace-out", default=None,
+                        help="Directory to write a per-tick canonical trace "
+                             "(states.jsonl + scene.json) for the harness's "
+                             "metrics package. Needs metrics/recording to be "
+                             "findable above this repository.")
+    parser.add_argument("--trace-rate-hz", type=float, default=10.0,
+                        help="Sampling rate of --trace-out (default 10 Hz; the "
+                             "physics rate is --fixed-dt).")
     parser.add_argument("--metrics-out", default=None,
                         help="Write a JSON run summary (collision occurrence, "
                              "impulses, motion stats) to this path.")
@@ -219,6 +227,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     from .backend import BehaviorTreeBuilder, ExecutionContext, Recorder, ScenarioInitializer
     from .backend import simapi
     from .backend.metrics import MetricsCollector
+    from .backend.trace import SceneTracer, make_recorder
     from .backend.policy import (ExternalEgoController, parse_policy_params,
                                  resolve_policy)
 
@@ -357,6 +366,19 @@ def main(argv: Optional[List[str]] = None) -> int:
         if recorder is not None:
             metrics.use_external_collisions(recorder._collisions)
 
+    tracer = None
+    if args.trace_out:
+        trace_rec, note = make_recorder(
+            args.trace_out, rate_hz=args.trace_rate_hz,
+            context={"method": "osc2runner", "backend": args.backend,
+                     "scenario": annotated.scenario.name, "town": map_name,
+                     "ego_binding": ego_binding, "fixed_dt": args.fixed_dt,
+                     "ego_policy": args.ego_policy})
+        if note:
+            print("[osc2carla] trace: %s" % note, file=sys.stderr)
+        tracer = SceneTracer(trace_rec, ctx, carla_map, ego_binding=ego_binding)
+        tracer.declare_scene()
+
     ctx.blackboard["go_signal"] = True
 
     sim_cap = args.sim_duration
@@ -418,6 +440,8 @@ def main(argv: Optional[List[str]] = None) -> int:
                 recorder.tick(sim_t)
             if metrics is not None:
                 metrics.tick(sim_t, leader_gap=leader_gap)
+            if tracer is not None:
+                tracer.tick(sim_t)
             if sim_cap and sim_cap > 0 and sim_t >= sim_cap:
                 print(f"[osc2carla] reached scenario duration {sim_cap:.1f}s",
                       file=sys.stderr)
@@ -443,6 +467,15 @@ def main(argv: Optional[List[str]] = None) -> int:
             print(f"[osc2carla] metrics -> {args.metrics_out} "
                   f"(collision_occurred={summary['collision_occurred']}, "
                   f"events={summary['n_collision_events']})", file=sys.stderr)
+        if tracer is not None:
+            # After metrics.write, so the collision list the trace records is
+            # the same one osc2carla_metrics.json reports, and before the
+            # actors are destroyed.
+            tracer.note_collisions(metrics.collisions if metrics is not None
+                                   else [], ego_binding)
+            out = tracer.close()
+            if out:
+                print("[osc2carla] trace -> %s" % out, file=sys.stderr)
         if controller is not None:
             controller.teardown()
         if recorder is not None:
