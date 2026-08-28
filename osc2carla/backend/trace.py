@@ -26,17 +26,20 @@ route to be measured against.
 placement is the authoritative answer. It is recorded as a zone.
 
 *States come from one world snapshot*, not from per-actor `get_transform()`
-calls. That is not a micro-optimisation: it is the difference between a
-recorder that observes the run and one that changes it. Measured on
-`red_light__osc2runner_carla__plant2__s000`, which is otherwise
-bit-reproducible -- reading the four non-ego actors individually each tick
-moved the first collision impulse in its seventh significant digit and the
-ego's travelled distance from 26.45 m to 43.7 m, and made the tail of the
-episode vary run to run; reading only the ego (which the metrics collector
-already reads) reproduced the baseline exactly, as did declaring the scene and
-never ticking. `world.get_snapshot()` is served from the frame the client
-already holds, so it adds no per-actor traffic. `docs/trace_recording.md`
-records the ablation.
+calls: `world.get_snapshot()` is served from the frame the client already holds
+and returns the whole cast, so recording six actors costs one call instead of
+eighteen. It is also the reading that is guaranteed self-consistent -- every
+actor as of the same frame -- which per-actor calls are not.
+
+It is *not* a determinism measure, and an earlier version of this comment said
+it was, on four samples that happened to agree. This scenario is not
+reproducible run to run with or without any recorder: five repeats with tracing
+disabled gave five different travelled distances (26.5 to 45.1 m) and two
+different first-collision impulses, and the three seeds recorded before this
+module existed show the same spread. The collision-level metrics
+(`collision_occurred`, `first_collision_time`) are stable across all of them;
+what varies is the post-impact motion of a wrecked vehicle. See
+`experiments/001-near-collision-scenario-success.md` section 8.
 
 *Nothing here may fail the run.* Every entry point swallows its own errors.
 """
@@ -71,18 +74,40 @@ def find_harness_root(start=None):
         path = parent
 
 
+#: The name the harness's recording package is loaded under. Deliberately not
+#: `metrics`: a method repository can already have a top-level module by that
+#: name (the orchestration port does), and then `import metrics.recording`
+#: resolves to it. Loading by path under a private name also makes it
+#: structural, rather than promised, that nothing else in the harness is
+#: imported.
+_RECORDING_MODULE = "harness_trace_recording"
+
+
+def _load_recorder_class(root):
+    import importlib.util
+    if _RECORDING_MODULE in sys.modules:
+        return sys.modules[_RECORDING_MODULE].TraceRecorder
+    pkg_dir = os.path.join(root, "metrics", "recording")
+    spec = importlib.util.spec_from_file_location(
+        _RECORDING_MODULE, os.path.join(pkg_dir, "__init__.py"),
+        submodule_search_locations=[pkg_dir])
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[_RECORDING_MODULE] = module
+    spec.loader.exec_module(module)
+    return module.TraceRecorder
+
+
 def make_recorder(output_dir, rate_hz=TRACE_RATE_HZ, context=None):
     """`(recorder, note)`; `recorder` is None when the harness is not found."""
     root = find_harness_root()
     if root is None:
         return None, ("no metrics/recording found above this repository; "
                       "no per-tick trace was written")
-    if root not in sys.path:
-        sys.path.insert(0, root)
     try:
-        from metrics.recording import TraceRecorder
+        TraceRecorder = _load_recorder_class(root)
     except Exception as exc:                       # pragma: no cover
-        return None, "metrics.recording import failed: %s" % (exc,)
+        return None, "metrics/recording could not be loaded from %s: %s" % (
+            root, exc)
     try:
         return TraceRecorder(output_dir, rate_hz=rate_hz,
                              context=dict(context or {})), None
@@ -194,11 +219,10 @@ class SceneTracer(object):
     def tick(self, sim_time):
         """One tick, read from the frame the client already holds.
 
-        `world.get_snapshot()` is one call for the whole cast; `actor.get_*()`
-        is one client call per actor per tick, and on this build those extra
-        calls perturb the run (see the module docstring). Where a snapshot is
-        unavailable the per-actor path is used and the fallback is recorded, so
-        a trace can never look snapshot-sourced when it is not.
+        `world.get_snapshot()` is one call for the whole cast, and every actor
+        in it is read as of the same frame. Where a snapshot is unavailable the
+        per-actor path is used and the fallback is recorded, so a trace can
+        never look snapshot-sourced when it is not.
         """
         if self.rec is None:
             return
