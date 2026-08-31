@@ -13,7 +13,7 @@ import "domain.osc"
 # Stage geometry (junction 2328, centre (29.7, 197.0), box x in [15.1, 44.3],
 # y in [177.4, 216.7]).  CARLA's y axis points south, so smaller y is north:
 #
-#      ego, lead_turner, follower --->  y = 201.6 eastbound, road 37 lane -1
+#      ego, lead_turner        --->  y = 201.6 eastbound, road 37 lane -1
 #      ==============================[ (29.7, 197.0) ]=========================
 #      oncoming, oncoming_b        <---  y = 195.0 westbound, road 38 lane +2
 #                                    |
@@ -34,7 +34,7 @@ import "domain.osc"
 # connects the left turn only from the INNERMOST one, exactly as on a real
 # road, which is what lets one scenario mix manoeuvres:
 #
-#   * ego, lead_turner, follower  -> eastbound lane -1 (inner)  -> turn left
+#   * ego, lead_turner            -> eastbound lane -1 (inner)  -> turn left
 #   * oncoming, oncoming_b        -> westbound lane +2 (middle) -> straight
 #
 # The turn is therefore selected by choosing the approach lane, and the
@@ -65,7 +65,7 @@ import "domain.osc"
 # vehicle that does not change what it is doing is a vehicle that does not give
 # way, which is the entire content of an unprotected-left conflict.
 #
-# Actors (5 vehicles + 1 reference marker):
+# Actors (4 vehicles + 1 reference marker):
 #   ego         Tesla Model 3 (camera vehicle), turning left.
 #   oncoming    Dodge Charger travelling the opposite direction on y = 195.0;
 #               has priority and does not yield.
@@ -74,10 +74,11 @@ import "domain.osc"
 #               the gap is still open and clears before oncoming arrives.  It
 #               is what makes the ego's turn read as a misjudged gap rather
 #               than an impossible one.
-#   follower    Mercedes coupe, 20 m behind the ego, queued to turn.
 #
 # Timeline, as measured on CARLA 0.9.16:
-#   t = 0        all five vehicles spawn at rest, launch on @go_signal.
+#   t = 0        all four vehicles spawn at rest, launch on @go_signal. The
+#                oncoming vehicle waits: it is released by the ego's own
+#                approach, not by the clock (see `release_gap`).
 #   t ~ 0-5.7    ego cruises eastbound at 30 kph; lead_turner turns left ahead
 #                of it and clears the conflict point while the gap is open.
 #   t ~ 5.7      ego is inside commit_radius of the conflict point; the monitor
@@ -87,8 +88,29 @@ import "domain.osc"
 #                point, when oncoming -- which has priority and never slows --
 #                arrives.  Impact is front-quarter, inside the junction
 #                (peak impulse ~5040, 21 collision events).
-#   t ~ 8.65-20  wreck settles; follower and oncoming_b arrive behind.
+#   t ~ 8.65-20  wreck settles; oncoming_b arrives behind.
 #   t = 20       termination guard.
+#
+# No follower, and why.  This file used to place a Mercedes coupe 20 m behind
+# the ego, queued to make the same turn.  drive() has no car-following term, so
+# it brakes for nothing: the ego slows to v_turn for the corner and anything
+# behind it drives into it.  The changelog below already records `follow_gap`
+# being widened from 14 m to 20 m and `v_follower` cut from 26 to 22 kph for
+# exactly this reason -- tuned against the scripted ego, and experiment 001
+# found the tuning does not transfer: in the PlanT 2.0 cells the follower struck
+# the ego at t = 3.5 s, seven seconds before a 0.85 s conflict was delivered by
+# the oncoming vehicle, and the episode was over.  Re-tuning it per ego policy
+# would make the baseline unfalsifiable, so it is removed.  The unprotected-left
+# conflict is the ego crossing a lane it has no priority on; nothing in that
+# needs a car queued behind it.
+#
+# Trigger timing is a parameter.  `release_gap` is the ego's remaining distance
+# to the conflict point when the oncoming vehicle is let go.  Releasing on the
+# ego's geometry rather than on the clock makes the conflict timing independent
+# of how fast the ego drives, which is what lets one grid search cover a fast
+# policy and a slow one (experiment 002 section 2, experiment 004).  The ego
+# spawns ~53 m from the conflict point, so the default fires on the first tick
+# and reproduces the launch-at-t=0 behaviour this file had before.
 #
 # Observed over three identical runs: first contact at 8.65 s in all three,
 # peak impulse 5028-5039, sole collision partner `oncoming` -- the intended
@@ -121,9 +143,9 @@ scenario left_turn:
 
     env: environment
 
-    # Declared first: lead_turner and follower are placed topologically
-    # relative to the ego, and the initializer resolves relative placement
-    # against the spawn transform of an already-spawned binding.
+    # Declared first: lead_turner is placed topologically relative to the ego,
+    # and the initializer resolves relative placement against the spawn
+    # transform of an already-spawned binding.
     ego: vehicle with:
         keep(it.name == "ego")
         keep(it.model == "vehicle.tesla.model3")
@@ -132,11 +154,6 @@ scenario left_turn:
         keep(it.name == "lead_turner")
         keep(it.model == "vehicle.audi.a2")
         keep(it.color == "20,20,20")
-
-    follower: vehicle with:
-        keep(it.name == "follower")
-        keep(it.model == "vehicle.mercedes.coupe")
-        keep(it.color == "200,200,200")
 
     # --- Oncoming carriageway ---
     oncoming: vehicle with:
@@ -163,7 +180,6 @@ scenario left_turn:
     # slow-down is commanded explicitly.
     var v_turn: speed = 18kph
     var v_lead: speed = 30kph
-    var v_follower: speed = 22kph
     # Tuned so oncoming is still ~19 m short of the conflict point when the ego
     # commits, and reaches it while the ego is mid-arc rather than after the
     # ego has cleared or before it has started turning.
@@ -171,12 +187,16 @@ scenario left_turn:
 
     # --- Distances ---
     var lead_gap: length = 22m
-    var follow_gap: length = 20m
     var oncoming_gap: length = 12m
 
     # The ego commits to the turn this far from the conflict point (the arc
     # starts at the junction mouth, ~14 m short of the oncoming lane).
     var commit_radius: length = 14m
+    # --- Trigger timing (the swept parameter) ---
+    # The ego's remaining distance to the conflict point when the oncoming
+    # vehicle is released. Larger means it goes earlier relative to the ego.
+    # The ego spawns ~53 m out, so the default fires on the first tick.
+    var release_gap: length = 70m
 
     do parallel:
         env.assign_celestial_position(azimuth: 0deg, elevation: 65deg)
@@ -217,19 +237,6 @@ scenario left_turn:
                     speed(v_lead)
                 wait elapsed(19s)
 
-        # ---- FOLLOWER: queued behind the ego to make the same turn ----
-        serial:
-            follower.assign_position() with:
-                position(distance: follow_gap, behind: ego, at: start)
-                speed(0kph, at: start)
-
-            wait @go_signal
-
-            one_of:
-                follower.drive() with:
-                    speed(v_follower)
-                wait elapsed(19s)
-
         # ---- ONCOMING: has priority, does not yield ----
         serial:
             oncoming.assign_position() with:
@@ -237,6 +244,12 @@ scenario left_turn:
                 speed(0kph, at: start)
 
             wait @go_signal
+
+            # Released by the ego's geometry, not by the clock. See the header:
+            # this is the trigger-timing parameter, and a plain condition rather
+            # than rise() so a release_gap wider than the ego's spawn distance
+            # fires immediately instead of waiting for an edge that never comes.
+            wait ego.object_distance(reference: conflict_point, direction: euclidean) < release_gap
 
             # Runs its own lane until the ego starts crossing it.
             one_of:

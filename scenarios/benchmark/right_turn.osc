@@ -41,7 +41,9 @@ import "domain.osc"
 #   opposing    Citroen C3 on the westbound carriageway.
 #
 # Timeline:
-#   t = 0        all four vehicles spawn at rest, launch on @go_signal.
+#   t = 0        all four vehicles spawn at rest, launch on @go_signal. The
+#                rear_ender waits: it is released by the ego's own approach to
+#                the merge point, not by the clock (see `release_gap`).
 #   t ~ 0-2      ego pulls out of the arm; rear_ender builds speed on its
 #                61 m approach.
 #   t ~ 2-5.1    ego works around the turn arc at v_turn, brake lights on.
@@ -71,6 +73,24 @@ import "domain.osc"
 #     is what the declared speeds say should happen.
 #   * collision_occurred and the intended partner are unchanged, and those are
 #     what expect_collision and intended_partner test.
+#
+# The rear_ender is NOT an incidental follower, and is not removed.  The
+# `follower` bindings in red_light.osc and left_turn.osc were: cars queued
+# behind the ego that rear-ended it because drive() has no car-following term,
+# ending episodes before the intended conflict was delivered (experiment 001
+# section 9.2).  Here the vehicle arriving from behind on the destination lane
+# IS the conflict -- the file's own marker is called `merge_point`, not
+# `conflict_point` -- so removing it would delete the scenario rather than
+# repair it.  What it needs instead is a metric that can score a merge conflict,
+# which is `metrics/scenario/merge.py`.
+#
+# Trigger timing is a parameter.  `release_gap` is the ego's remaining distance
+# to the merge point when the rear_ender is let go.  Releasing on the ego's
+# geometry rather than on the clock makes the conflict timing independent of how
+# fast the ego takes the corner, which is what lets one grid search cover a fast
+# policy and a slow one (experiment 002 section 2, experiment 004).  The ego
+# spawns ~25 m from the merge point, so the default fires on the first tick and
+# reproduces the launch-at-t=0 behaviour this file had before.
 #
 # Junction choice: junction 841 is used because the ego's right turn and
 # rear_ender's straight-through movement land on the same lane, and because
@@ -154,6 +174,11 @@ scenario right_turn:
     var corner_radius: length = 18m
     # ...and counts as established in the destination lane inside this one.
     var merge_radius: length = 8m
+    # --- Trigger timing (the swept parameter) ---
+    # The ego's remaining distance to the merge point when the rear_ender is
+    # released. Larger means it arrives earlier relative to the ego's merge.
+    # The ego spawns ~25 m out, so the default fires on the first tick.
+    var release_gap: length = 40m
 
     do parallel:
         env.assign_celestial_position(azimuth: 0deg, elevation: 65deg)
@@ -198,6 +223,12 @@ scenario right_turn:
                 speed(0kph, at: start)
 
             wait @go_signal
+
+            # Released by the ego's geometry, not by the clock. See the header:
+            # this is the trigger-timing parameter, and a plain condition rather
+            # than rise() so a release_gap wider than the ego's spawn distance
+            # fires immediately instead of waiting for an edge that never comes.
+            wait ego.object_distance(reference: merge_point, direction: euclidean) < release_gap
 
             one_of:
                 rear_ender.drive() with:

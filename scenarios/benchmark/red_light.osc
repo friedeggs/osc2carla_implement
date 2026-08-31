@@ -14,7 +14,7 @@ import "domain.osc"
 #                       N  ^ +y
 #                          |
 #         ...............  |  ...............
-#         westbound  y=16.6 -->  EGO road  (ego, lead, follower travel -x)
+#         westbound  y=16.6 -->  EGO road  (ego and lead travel -x)
 #         ---------------[ JUNCTION 189 ]---------------
 #                          |
 #                     x = -48.8  northbound cross road (+y)
@@ -28,11 +28,10 @@ import "domain.osc"
 #     (CARLA's y axis points south, so the violator's +y heading enters the
 #     junction from the ego's right and strikes the ego's right flank.)
 #
-# Actors (5 vehicles + 1 reference marker):
+# Actors (4 vehicles + 1 reference marker):
 #   ego      Tesla Model 3 (camera vehicle), crossing westbound on green.
 #   lead     Audi A2, 22 m ahead of the ego in the same lane; clears the
 #            junction just before the ego enters it.
-#   follower Mercedes coupe, 16 m behind the ego in the same lane.
 #   violator CarlaCola truck on the crossing road: does not slow for its red
 #            signal and T-bones the ego inside the junction.
 #   stopper  Nissan Micra, 14 m behind the violator on the crossing road; obeys
@@ -41,9 +40,11 @@ import "domain.osc"
 #            vehicle stops and the other does not.
 #
 # Timeline:
-#   t = 0        all five vehicles spawn at rest, then launch on @go_signal.
+#   t = 0        all four vehicles spawn at rest, then launch on @go_signal.
+#                The violator waits: it is released by the ego's own approach,
+#                not by the clock (see `release_gap`).
 #   t ~ 0-5      ego cruises westbound at 30 kph behind the lead vehicle;
-#                violator and stopper cruise toward their red signal.
+#                the stopper cruises toward its red signal.
 #   t = 4.55     ego crosses the stop line; the monitor emits EGO_IN_JUNCTION.
 #                The stopper has already begun braking for the red, brake
 #                lights on.
@@ -80,6 +81,27 @@ import "domain.osc"
 # are unchanged, and those are what expect_collision and intended_partner
 # test.
 #
+# No follower, and why.  This file used to place a Mercedes coupe 16 m behind
+# the ego in the ego's own lane, queued through the junction.  drive() has no
+# car-following term, so that vehicle brakes for nothing: whenever the ego is
+# slower than the scripted ego this file was tuned against, it rear-ends it.
+# Measured over the 12 evaluable cells of experiment 001, it hit the ego before
+# the violator arrived in nine of them -- including cells where the intended
+# conflict was being delivered and the episode had already ended.  Its own
+# changelog in left_turn.osc records `follow_gap` being widened once for exactly
+# this reason, against exactly one ego.  Tuning it per policy would make the
+# baseline unfalsifiable, so it is removed instead: the scenario's content is
+# the violator, and nothing here needed a car behind the ego to state it.
+#
+# Trigger timing is a parameter.  `release_gap` is the ego's remaining distance
+# to the conflict point when the violator is let go.  Releasing on the ego's
+# geometry rather than on the clock is what makes the timing independent of how
+# fast the ego drives -- a policy that crawls would otherwise always meet a
+# hero that had long since gone through -- and it is the knob a grid search
+# over conflict timing turns (experiment 002 section 2, experiment 004).  The
+# default is wider than the ego's own spawn distance, so it fires on the first
+# tick and reproduces the launch-at-t=0 behaviour this file had before.
+#
 # Signal note: this baseline does not implement traffic lights (see "Coverage
 # vs. the paper" in README.md) -- there is no action to set or read a signal
 # phase, and scripted actors never yield to CARLA's own signals.  The red light
@@ -94,9 +116,9 @@ scenario red_light:
     env: environment
 
     # --- Ego and its surrounding traffic (westbound road, y ~ 16.6) ---
-    # NOTE: the ego is declared first because lead/follower are placed
-    # topologically relative to it, and the initializer resolves relative
-    # placement against the spawn transform of an already-spawned binding.
+    # NOTE: the ego is declared first because the lead is placed topologically
+    # relative to it, and the initializer resolves relative placement against
+    # the spawn transform of an already-spawned binding.
     ego: vehicle with:
         keep(it.name == "ego")
         keep(it.model == "vehicle.tesla.model3")
@@ -105,11 +127,6 @@ scenario red_light:
         keep(it.name == "lead")
         keep(it.model == "vehicle.audi.a2")
         keep(it.color == "20,20,20")
-
-    follower: vehicle with:
-        keep(it.name == "follower")
-        keep(it.model == "vehicle.mercedes.coupe")
-        keep(it.color == "200,200,200")
 
     # --- Crossing-road traffic (northbound road, x ~ -48.8) ---
     violator: vehicle with:
@@ -136,7 +153,6 @@ scenario red_light:
     # --- Speeds ---
     var v_ego: speed = 30kph
     var v_lead: speed = v_ego + 4kph
-    var v_follower: speed = v_ego - 2kph
     var v_violator: speed = 32kph
     # Speed it accelerates to once it has committed to the red.
     var v_violator_run: speed = v_violator + 8kph
@@ -144,7 +160,6 @@ scenario red_light:
 
     # --- Distances ---
     var lead_gap: length = 22m
-    var follow_gap: length = 16m
     var queue_gap: length = 14m
 
     # The ego has entered the junction box once it is inside this radius of the
@@ -159,6 +174,12 @@ scenario red_light:
     # The stopper starts braking this far from the conflict point, which puts
     # it at rest just short of its stop line.
     var stop_line_gap: length = 30m
+    # --- Trigger timing (the swept parameter) ---
+    # The ego's remaining distance to the conflict point when the violator is
+    # released.  Larger means the violator goes earlier relative to the ego.
+    # The ego spawns 50 m out, so the default fires on the first tick and the
+    # violator launches with everyone else, as it did before this was a knob.
+    var release_gap: length = 70m
 
     do parallel:
         # ---- Environment: bright daylight, sun high enough to read signals ----
@@ -196,19 +217,6 @@ scenario red_light:
                     speed(v_lead)
                 wait elapsed(17s)
 
-        # ---- FOLLOWER: same lane, trails the ego into the junction ----
-        serial:
-            follower.assign_position() with:
-                position(distance: follow_gap, behind: ego, at: start)
-                speed(0kph, at: start)
-
-            wait @go_signal
-
-            one_of:
-                follower.drive() with:
-                    speed(v_follower)
-                wait elapsed(17s)
-
         # ---- VIOLATOR: runs the red and rams the ego ----
         serial:
             # 42 m south of the conflict point: at v_violator that puts the
@@ -218,6 +226,12 @@ scenario red_light:
                 speed(0kph, at: start)
 
             wait @go_signal
+
+            # Released by the ego's geometry, not by the clock. See the header:
+            # this is the trigger-timing parameter, and a plain condition rather
+            # than rise() so a release_gap wider than the ego's spawn distance
+            # fires immediately instead of waiting for an edge that never comes.
+            wait ego.object_distance(reference: conflict_point, direction: euclidean) < release_gap
 
             # Phase 1: approach the signal without slowing, unlike the stopper
             # on the same approach.  Lane following until the ego reaches the

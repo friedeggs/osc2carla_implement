@@ -17,7 +17,7 @@ import "domain.osc"
 # Stage geometry -- centre junction of the `grid` town, centre (80, 80), box
 # x in [69, 91], y in [69, 91]:
 #
-#      ego, lead_turner, follower --->  y = 81.75 eastbound, lane -1
+#      ego, lead_turner        --->  y = 81.75 eastbound, lane -1
 #      ==============================[ (80, 80) ]==============================
 #      oncoming                     <---  y = 78.25 westbound, lane +1
 #      oncoming_b                   <---  y = 74.75 westbound, lane +2
@@ -35,7 +35,7 @@ import "domain.osc"
 # difference: a left turn is connected only from the INNERMOST lane, exactly
 # as on a real road.  That is what lets one scenario mix manoeuvres:
 #
-#   * ego, lead_turner, follower  -> eastbound lane -1 (inner)  -> turn left
+#   * ego, lead_turner            -> eastbound lane -1 (inner)  -> turn left
 #   * oncoming                    -> westbound lane +1 (inner)  -> would turn,
 #                                    but never reaches the box before the
 #                                    conflict; it is timed to arrive as the
@@ -70,13 +70,21 @@ import "domain.osc"
 # registers static contacts as vehicles drive over it; those are reported
 # separately and excluded from the collision verdict.
 
+# No follower.  Both this file and its CARLA original used to place a Mercedes
+# coupe behind the ego in the ego's own lane.  drive() has no car-following
+# term, so it brakes for nothing and rear-ends any ego slower than the scripted
+# one it was tuned against -- which experiment 001 measured happening in nine of
+# twelve evaluable cells, ending episodes before the intended conflict was
+# delivered.  Removed rather than re-tuned per policy: see the CARLA original
+# for the full argument.
+
 scenario left_turn:
     carla_map: map with:
         keep(it.map_file == "grid")
 
     env: environment
 
-    # Declared first: lead_turner and follower are placed topologically
+    # Declared first: lead_turner is placed topologically
     # relative to the ego.
     ego: vehicle with:
         keep(it.name == "ego")
@@ -86,11 +94,6 @@ scenario left_turn:
         keep(it.name == "lead_turner")
         keep(it.model == "vehicle.audi.a2")
         keep(it.color == "20,20,20")
-
-    follower: vehicle with:
-        keep(it.name == "follower")
-        keep(it.model == "vehicle.mercedes.coupe")
-        keep(it.color == "200,200,200")
 
     # --- Oncoming carriageway ---
     oncoming: vehicle with:
@@ -117,7 +120,6 @@ scenario left_turn:
     # slow-down is commanded explicitly.
     var v_turn: speed = 18kph
     var v_lead: speed = 30kph
-    var v_follower: speed = 22kph
     # Tuned so oncoming is still short of the conflict point when the ego
     # commits, rather than already past it. Faster than this and it reaches
     # the crossing first, then homes BACK onto an ego that has not started
@@ -127,7 +129,6 @@ scenario left_turn:
 
     # --- Distances ---
     var lead_gap: length = 22m
-    var follow_gap: length = 20m
 
     # The ego commits to the turn this far from the conflict point.
     var commit_radius: length = 14m
@@ -170,19 +171,6 @@ scenario left_turn:
             one_of:
                 lead_turner.drive() with:
                     speed(v_lead)
-                wait elapsed(19s)
-
-        # ---- FOLLOWER: queued behind the ego to make the same turn ----
-        serial:
-            follower.assign_position() with:
-                position(distance: follow_gap, behind: ego, at: start)
-                speed(0kph, at: start)
-
-            wait @go_signal
-
-            one_of:
-                follower.drive() with:
-                    speed(v_follower)
                 wait elapsed(19s)
 
         # ---- ONCOMING: has priority, does not yield ----

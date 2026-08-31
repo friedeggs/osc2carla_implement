@@ -312,6 +312,130 @@ def scenario_map_file(path: str) -> Optional[str]:
     return match.group(1) if match else None
 
 
+#: Matches one `var <name>: <type> = <value>` declaration in an .osc, keeping
+#: the value and any unit suffix separate so an override can reuse the unit the
+#: file already declared.
+_VAR_DECL = re.compile(
+    r"^(?P<indent>[ \t]*)var[ \t]+(?P<name>\w+)[ \t]*:[ \t]*(?P<type>\w+)"
+    r"[ \t]*=[ \t]*(?P<value>[^\n#]*?)[ \t]*(?P<comment>#.*)?$",
+    re.M)
+
+#: Units a bare numeric override inherits from the declaration it replaces, so
+#: `release_gap=16` means 16 m in a file that wrote `16m` and not 16 of whatever
+#: the compiler defaults to. Anything else has to be written out in full.
+_UNIT_OF = re.compile(r"^-?\d+(?:\.\d+)?(?P<unit>[A-Za-z/]*)$")
+
+
+def scenario_variables(path: str) -> Dict[str, str]:
+    """`{name: declared value}` for every `var` in an .osc, as written."""
+    try:
+        with open(path) as fh:
+            text = fh.read()
+    except OSError:
+        return {}
+    return {m.group("name"): m.group("value").strip()
+            for m in _VAR_DECL.finditer(text)}
+
+
+def requested_variables(parameters: Dict[str, Any]) -> Dict[str, str]:
+    """Scenario-variable overrides for this run, from the request or the node.
+
+    Two sources, environment last so a sweep can turn one knob without editing
+    a config:
+
+        implementation.parameters.scenario_vars: {release_gap: 16.0}
+        OSC2CARLA_SCENARIO_VARS="release_gap=16,cut_in_lead=9"
+
+    This is how a *scripted* scenario's trigger timing becomes a swept
+    parameter. The orchestration method is asked for a time-to-conflict and
+    retimes its actors to deliver it; an .osc cannot be asked for anything, so
+    the comparable knob is the declared trigger distance, and the comparable
+    procedure is a grid search over it (experiment 004). Rewriting the
+    declaration rather than adding a command-line flag keeps the whole scenario
+    in one auditable artifact: the materialized .osc is written into the run
+    directory and is exactly what was executed.
+    """
+    out: Dict[str, str] = {}
+    declared = parameters.get("scenario_vars")
+    if isinstance(declared, dict):
+        for name, value in declared.items():
+            out[str(name)] = str(value)
+    raw = _env("OSC2CARLA_SCENARIO_VARS")
+    if raw:
+        for item in raw.replace(";", ",").split(","):
+            item = item.strip()
+            if not item:
+                continue
+            if "=" not in item:
+                raise RequestError(
+                    "OSC2CARLA_SCENARIO_VARS entry %r is not name=value" % item)
+            name, value = item.split("=", 1)
+            out[name.strip()] = value.strip()
+    return out
+
+
+def materialize_scenario(scenario_path: str, overrides: Dict[str, str],
+                         output_dir: str) -> Tuple[str, Dict[str, Any]]:
+    """`(path executed, note)`. Rewrites `var` declarations, or passes through.
+
+    A bare numeric override inherits the unit of the declaration it replaces --
+    `release_gap=16` against `var release_gap: length = 70m` becomes `16m` --
+    because a length that silently loses its unit is a different scenario, not a
+    smaller number. An override naming a variable the file does not declare is
+    refused rather than ignored: a grid search whose knob is not connected to
+    anything produces a flat curve and looks like a finding.
+    """
+    if not overrides:
+        return scenario_path, {}
+    with open(scenario_path) as fh:
+        text = fh.read()
+    declared = scenario_variables(scenario_path)
+    unknown = sorted(set(overrides) - set(declared))
+    if unknown:
+        raise RequestError(
+            "scenario_vars names %s, which %s does not declare; it declares %s"
+            % (", ".join(unknown), os.path.basename(scenario_path),
+               ", ".join(sorted(declared)) or "no variables"))
+
+    applied: Dict[str, str] = {}
+
+    def _rewrite(match: "re.Match") -> str:
+        name = match.group("name")
+        if name not in overrides:
+            return match.group(0)
+        value = overrides[name]
+        unit_match = _UNIT_OF.match(value)
+        if unit_match is not None and not unit_match.group("unit"):
+            old_unit = _UNIT_OF.match(declared[name])
+            if old_unit is not None and old_unit.group("unit"):
+                value = value + old_unit.group("unit")
+        applied[name] = value
+        comment = match.group("comment")
+        return "%svar %s: %s = %s%s" % (
+            match.group("indent"), name, match.group("type"), value,
+            ("  " + comment) if comment else "")
+
+    rewritten = _VAR_DECL.sub(_rewrite, text)
+    stem = os.path.splitext(os.path.basename(scenario_path))[0]
+    out_path = os.path.join(output_dir, stem + ".osc")
+    header = (
+        "# Materialized by scenario_orchestration/run.py from\n"
+        "#   %s\n"
+        "# with scenario_vars %s.\n"
+        "# This file is what was executed; the source above is unmodified.\n"
+        % (os.path.relpath(scenario_path, REPO_ROOT),
+           ", ".join("%s=%s" % kv for kv in sorted(applied.items())) or "none"))
+    with open(out_path, "w") as fh:
+        fh.write(header + rewritten)
+    # The .osc `import "domain.osc"` is resolved against the file's own
+    # directory, and the run directory is not that directory, so the stdlib has
+    # to be reachable from where the copy lands.
+    note = {"scenario_vars_applied": dict(applied),
+            "scenario_vars_declared_defaults": {k: declared[k] for k in applied},
+            "scenario_file_executed": out_path}
+    return out_path, note
+
+
 def resolve_town(backend: str, intent: Dict[str, Any], parameters: Dict[str, Any],
                  osc_map: Optional[str]) -> Tuple[Optional[str], Optional[str]]:
     """``(--town value, note)``.
@@ -774,7 +898,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     try:
         backend = resolve_backend(parameters)
-        family, scenario_path = resolve_scenario(request, backend)
+        family, scenario_source = resolve_scenario(request, backend)
+        # Trigger timing and every other declared `var` is overridable, and the
+        # materialized copy goes in the run directory so what executed is on
+        # disk beside the numbers it produced.
+        scenario_path, var_note = materialize_scenario(
+            scenario_source, requested_variables(parameters), output_dir)
         intent = load_intent(backend, family)
         osc_map = scenario_map_file(scenario_path)
         ego_binding = scenario_ego_binding(scenario_path)
@@ -788,10 +917,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                             reason=str(exc))
 
     context.update(policy_notes)
+    context.update(var_note)
     context.update({
         "backend": backend,
         "scenario_family_resolved": family,
-        "scenario_file": os.path.relpath(scenario_path, REPO_ROOT),
+        "scenario_file": os.path.relpath(scenario_source, REPO_ROOT),
         "scenario_map_file": osc_map,
         "ego_binding": ego_binding or "(first vehicle in the scenario)",
         "town": town or osc_map,

@@ -20,7 +20,7 @@ import "domain.osc"
 #                        violator, stopper
 #                            |  x = 78.25 southbound (+y), from the north arm
 #                            v
-#   ego, lead, follower <--- [ JUNCTION (80, 80) ] <--- ego enters from x = 130
+#   ego, lead           <--- [ JUNCTION (80, 80) ] <--- ego enters from x = 130
 #   ==========================================================================
 #                     y = 78.25 westbound (-x), h = 3.1416
 #
@@ -45,7 +45,7 @@ import "domain.osc"
 # collision course, so removing ram moved first contact by 0.05 s and the
 # peak impulse by 0.2%.
 #
-# Actors (5 vehicles + 1 reference marker): ego, lead, follower on the
+# Actors (4 vehicles + 1 reference marker): ego and lead on the
 # westbound carriageway; violator (a european_hgv stands in for the CarlaCola,
 # which the local blueprint table does not carry) and stopper on the crossing
 # road.
@@ -61,6 +61,14 @@ import "domain.osc"
 # Expected on the local backend: collision_occurred = true, first contact at
 # t = 6.95 s, peak impulse ~17800, sole partner violator.
 
+# No follower.  Both this file and its CARLA original used to place a Mercedes
+# coupe behind the ego in the ego's own lane.  drive() has no car-following
+# term, so it brakes for nothing and rear-ends any ego slower than the scripted
+# one it was tuned against -- which experiment 001 measured happening in nine of
+# twelve evaluable cells, ending episodes before the intended conflict was
+# delivered.  Removed rather than re-tuned per policy: see the CARLA original
+# for the full argument.
+
 scenario red_light:
     carla_map: map with:
         keep(it.map_file == "grid")
@@ -68,7 +76,7 @@ scenario red_light:
     env: environment
 
     # --- Ego and its surrounding traffic (westbound, y = 78.25) ---
-    # Declared first: lead and follower are placed relative to it.
+    # Declared first: the lead is placed relative to it.
     ego: vehicle with:
         keep(it.name == "ego")
         keep(it.model == "vehicle.tesla.model3")
@@ -77,11 +85,6 @@ scenario red_light:
         keep(it.name == "lead")
         keep(it.model == "vehicle.audi.a2")
         keep(it.color == "20,20,20")
-
-    follower: vehicle with:
-        keep(it.name == "follower")
-        keep(it.model == "vehicle.mercedes.coupe")
-        keep(it.color == "200,200,200")
 
     # --- Crossing-road traffic (southbound, x = 78.25) ---
     violator: vehicle with:
@@ -106,7 +109,6 @@ scenario red_light:
     # --- Speeds ---
     var v_ego: speed = 30kph
     var v_lead: speed = v_ego + 4kph
-    var v_follower: speed = v_ego - 2kph
     var v_violator: speed = 32kph
     # Speed it accelerates to once it has committed to the red.
     var v_violator_run: speed = v_violator + 8kph
@@ -114,7 +116,6 @@ scenario red_light:
 
     # --- Distances ---
     var lead_gap: length = 22m
-    var follow_gap: length = 16m
     var queue_gap: length = 20m
 
     # The ego has entered the junction box once it is inside this radius of
@@ -160,19 +161,6 @@ scenario red_light:
             one_of:
                 lead.drive() with:
                     speed(v_lead)
-                wait elapsed(17s)
-
-        # ---- FOLLOWER: same lane, trails the ego into the junction ----
-        serial:
-            follower.assign_position() with:
-                position(distance: follow_gap, behind: ego, at: start)
-                speed(0kph, at: start)
-
-            wait @go_signal
-
-            one_of:
-                follower.drive() with:
-                    speed(v_follower)
                 wait elapsed(17s)
 
         # ---- VIOLATOR: runs the red and rams the ego ----
