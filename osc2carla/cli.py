@@ -123,9 +123,26 @@ def main(argv: Optional[List[str]] = None) -> int:
                         help="Print the local backend's road networks and exit.")
     parser.add_argument("--junction-turn", default="straight",
                         choices=("straight", "left", "right"),
-                        help="Local backend only: which manoeuvre drive() "
-                             "takes at a junction, since it follows "
-                             "next()[0] (default: straight).")
+                        help="Which manoeuvre the ego's route takes where a "
+                             "lane branches, since a route is walked with "
+                             "next()[0] and CARLA's own ordering of the "
+                             "branches means nothing (default: straight). On "
+                             "the local backend it orders the map's own "
+                             "successors; on CARLA it chooses the exit when "
+                             "the ego's route is planned. A property of the "
+                             "scenario -- the harness sets it per scenario "
+                             "from the benchmark's declared intent.")
+    parser.add_argument("--ego-light", default=None,
+                        choices=("green", "yellow", "red"),
+                        help="The signal phase the ego meets at its junction, "
+                             "set at spawn and frozen for the episode. This "
+                             "dialect has no action that sets a signal phase, "
+                             "so left unset the phase is whatever the "
+                             "simulator's own cycle happened to be showing -- "
+                             "and on the junction families it decides the run. "
+                             "A property of the scenario: the harness sets it "
+                             "per scenario from the benchmark's declared "
+                             "intent.")
     parser.add_argument("--render-mode", default="auto",
                         choices=("auto", "window", "headless", "off"),
                         help="Local backend only: 'window' opens a pygame "
@@ -250,6 +267,13 @@ def main(argv: Optional[List[str]] = None) -> int:
                 return b.name
         return None
 
+    # Set before any route is planned. A bridged policy's observation builder is
+    # reached through a class name and can be given no argument of its own, so
+    # the preference the scenario declared travels this way rather than through
+    # every constructor between here and there.
+    from .backend import route as route_plan
+    route_plan.set_default_preference(args.junction_turn)
+
     ego_binding = _default_ego_binding() if args.ego_policy else None
     external_actors = {ego_binding} if ego_binding else set()
     policy_params = parse_policy_params(args.policy_param)
@@ -293,6 +317,21 @@ def main(argv: Optional[List[str]] = None) -> int:
     initializer.initialise()
     if not args.no_sync:
         world.tick()
+
+    # The ego's junction phase, before the first policy decision is taken.
+    signal_note = {"requested": None}
+    if not local:
+        from .backend import signals
+        signal_actor = ctx.actor(ego_binding) if ego_binding else None
+        if signal_actor is None:
+            signal_actor = ctx.actor(_default_ego_binding() or "")
+        signal_note = signals.apply(world, carla_map, signal_actor,
+                                    args.ego_light)
+        if signal_note.get("requested"):
+            print("[osc2carla] ego signal: %s" % signal_note.get("note"),
+                  file=sys.stderr)
+        if not args.no_sync:
+            world.tick()
 
     rec_binding = args.record_actor
     if rec_binding is None:
@@ -343,7 +382,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     if args.ego_policy:
         policy_cls = resolve_policy(args.ego_policy)
         controller = ExternalEgoController(world, carla_map, ctx, ego_binding,
-                                           policy_cls(), params=policy_params)
+                                           policy_cls(), params=policy_params,
+                                           turn_preference=args.junction_turn)
         unknown = getattr(controller.policy, "_unknown", None)
         if unknown:
             print(f"[osc2carla] warning: ignored unknown policy params {unknown}",
@@ -373,7 +413,8 @@ def main(argv: Optional[List[str]] = None) -> int:
             context={"method": "osc2runner", "backend": args.backend,
                      "scenario": annotated.scenario.name, "town": map_name,
                      "ego_binding": ego_binding, "fixed_dt": args.fixed_dt,
-                     "ego_policy": args.ego_policy})
+                     "ego_policy": args.ego_policy,
+                     "ego_signal": signal_note})
         if note:
             print("[osc2carla] trace: %s" % note, file=sys.stderr)
         tracer = SceneTracer(trace_rec, ctx, carla_map, ego_binding=ego_binding)
@@ -397,8 +438,8 @@ def main(argv: Optional[List[str]] = None) -> int:
                        ego_policy=args.ego_policy,
                        ego_binding=ego_binding,
                        bindings=_binding_labels(annotated, ctx),
-                       note="drive() takes the "
-                            f"{args.junction_turn} exit at junctions")
+                       note=f"routes take the {args.junction_turn} exit at "
+                            "junctions")
 
     start = time.time()
     sim_t = 0.0

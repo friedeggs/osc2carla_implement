@@ -38,6 +38,7 @@ import math
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
+from . import route as route_plan
 from .simapi import sim as carla
 
 
@@ -284,7 +285,7 @@ class ExternalEgoController:
     def __init__(self, world, carla_map, ctx, binding: str, policy: EgoPolicy,
                  params: Optional[Dict[str, float]] = None,
                  route_step: float = 2.0, route_horizon: float = 60.0,
-                 corridor: float = 2.2):
+                 corridor: float = 2.2, turn_preference: Optional[str] = None):
         self.world = world
         self.map = carla_map
         self.ctx = ctx
@@ -293,6 +294,9 @@ class ExternalEgoController:
         self.route_step = route_step
         self.route_horizon = route_horizon
         self.corridor = corridor
+        self.turn_preference = route_plan.normalize_preference(
+            turn_preference, default=route_plan.default_preference())
+        self.plan = None
         self.ticks = 0
         self._actor = ctx.actor(binding)
         if self._actor is None:
@@ -341,29 +345,26 @@ class ExternalEgoController:
     # -- perception --------------------------------------------------------
 
     def _sample_route(self) -> List[RoutePoint]:
-        """Path the ego would follow, sampled ahead of it.
+        """Path the ego will follow, sampled ahead of it.
 
-        Uses the same ``waypoint.next()[0]`` rule the compiled ``drive()``
-        behaviour uses, so an external policy inherits the identical route
-        through a junction.
+        A slice of the one plan walked from this ego's spawn (``backend/route.py``),
+        not a fresh walk from wherever the ego is now: re-projecting each tick
+        snaps onto whichever junction connector is nearest, which is how an ego
+        that was driving straight came to be handed a left turn, and then a
+        different one on the next tick.
         """
-        out: List[RoutePoint] = []
         if self.map is None:
-            return out
-        wp = self.map.get_waypoint(self._actor.get_location(), project_to_road=True)
-        if wp is None:
-            return out
-        s = 0.0
-        while s < self.route_horizon:
-            nxt = wp.next(self.route_step)
-            if not nxt:
-                break
-            wp = nxt[0]
-            s += self.route_step
-            t = wp.transform
-            out.append(RoutePoint(x=t.location.x, y=t.location.y,
-                                  heading=math.radians(t.rotation.yaw), s=s))
-        return out
+            return []
+        if self.plan is None:
+            self.plan = route_plan.plan_for(self.map, self._actor,
+                                            preference=self.turn_preference)
+        location = self._actor.get_location()
+        ahead = self.plan.ahead(location.x, location.y,
+                                first_m=self.route_step, step_m=self.route_step,
+                                count=max(0, int(self.route_horizon / self.route_step)))
+        return [RoutePoint(x=x, y=y, heading=heading,
+                           s=(index + 1) * self.route_step)
+                for index, (x, y, heading) in enumerate(ahead)]
 
     def _find_leader(self, obs: Observation) -> Optional[Leader]:
         """Closest vehicle whose centre lies within the ego's path corridor.

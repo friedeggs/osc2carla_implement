@@ -14,12 +14,14 @@ from there rather than reimplementing the format, so the two cannot drift.
 
 Three scenario-specific notes.
 
-*Reference paths* are built by following `waypoint.next()[0]` from each actor's
-spawn transform -- the identical rule the compiled `drive()` behaviour and
-`ExternalEgoController._sample_route` use, so the recorded path is the path the
-controller actually intends rather than a plausible reconstruction. It is
-sampled once, before the run starts, so a policy that stops short still has a
-route to be measured against.
+*Reference paths* are sampled once, before the run starts, so an actor that
+stops short still has a route to be measured against. The ego under an external
+policy takes the *plan* that policy is conditioned on (`backend/route.py`), so
+the recorded path and the route the policy is handed are one object and cannot
+disagree -- they did before that plan existed: this file walked straight through
+Town10HD_Opt's junction while the policy's own per-tick walk had turned left.
+Every other actor keeps the `waypoint.next()[0]` walk from its spawn transform,
+which remains the rule the compiled `drive()` behaviour steers by.
 
 *The conflict point* is not inferred: the benchmark `.osc` files declare a
 `conflict_point` stationary object at the exact lane crossing, and its
@@ -161,17 +163,44 @@ class SceneTracer(object):
                              carla_id=getattr(actor, "id", None))
 
     def _declare_paths(self):
-        """`waypoint.next()[0]` from the spawn transform, which is what the
-        compiled `drive()` behaviour follows. Recorded once, before the run, so
-        an ego that stops short still has the route it was on."""
+        """Each vehicle's reference path, recorded once before the run, so an
+        actor that stops short still has the route it was on.
+
+        The ego under an external policy is declared from the *plan* that policy
+        is actually being conditioned on (`backend/route.py`), so the recorded
+        path and the route the policy sees cannot disagree -- they used to: the
+        path here walked straight through Town10HD_Opt's junction while the
+        policy's own per-tick walk had turned left.
+
+        Every other vehicle keeps the `waypoint.next()[0]` walk, because that is
+        what still steers them: `drive()` recomputes its steering reference from
+        the actor's live position every tick (`atomic_behaviors.py`), so a path
+        declared by any other rule would describe something they do not do.
+        """
         if self.map is None:
             return
         for name, actor in self.actors.items():
             if not str(getattr(actor, "type_id", "")).startswith("vehicle."):
                 continue
-            poly = self._route_from(actor)
+            if self.ego_binding is not None and name == self.ego_binding:
+                poly = self._planned_route(actor)
+            else:
+                poly = self._route_from(actor)
             if len(poly) >= 2:
                 self.rec.declare_path(name, poly, source="route")
+
+    def _planned_route(self, actor):
+        """The one plan this ego drives, as a world-frame polyline."""
+        try:
+            from . import route as route_plan
+            # No length of its own: the plan's reach is the plan's property,
+            # and the policy conditioned on it needs more road than a 150 m
+            # reference path does.
+            plan = route_plan.plan_for(self.map, actor)
+        except Exception as exc:                     # pragma: no cover
+            self.errors.append("planned route: %s" % (exc,))
+            return self._route_from(actor)
+        return plan.world_polyline()
 
     def _route_from(self, actor):
         try:

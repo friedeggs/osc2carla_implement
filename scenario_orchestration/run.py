@@ -461,6 +461,53 @@ def resolve_town(backend: str, intent: Dict[str, Any], parameters: Dict[str, Any
                      "against" % (requested, default))
 
 
+#: Which exit a route takes where a lane branches. "straight" for a scenario
+#: that declares nothing, which is what every non-junction family wants.
+JUNCTION_TURNS = ("straight", "left", "right")
+
+
+def resolve_junction_turn(intent: Dict[str, Any]) -> str:
+    """The scenario's declared junction manoeuvre, overridable per run.
+
+    Declared in ``experiments/benchmark*.json`` beside the rest of a scenario's
+    intent, because which way the ego goes through the junction *is* part of what
+    the scenario is: red_light crosses straight, right_turn turns right,
+    left_turn turns left. ``$OSC2CARLA_JUNCTION_TURN`` overrides it for a run
+    that means to sweep it, the same way every other node fact travels.
+    """
+    value = (_env("OSC2CARLA_JUNCTION_TURN") or "").strip().lower()
+    if value not in JUNCTION_TURNS:
+        value = str(intent.get("junction_turn") or "").strip().lower()
+    return value if value in JUNCTION_TURNS else "straight"
+
+
+#: Signal phases a scenario may declare for the ego. Absent means the scenario
+#: is not about a phase -- an unsignalised junction, or no junction at all -- and
+#: nothing is set.
+EGO_LIGHTS = ("green", "yellow", "red")
+
+
+def resolve_ego_light(intent: Dict[str, Any]) -> Optional[str]:
+    """The phase the ego's own signal is held at, or ``None``.
+
+    Declared per scenario in ``experiments/benchmark*.json``, because on the
+    junction families it is part of what the scenario *is*: red_light crosses on
+    green while another vehicle takes its red, left_turn is unprotected against
+    oncoming traffic holding the same green, and right_turn is a right turn on
+    red. The dialect has no action for a signal phase, so unset it is whatever
+    the simulator's cycle was showing -- which decides whether a light-obeying
+    policy ever reaches the conflict. ``$OSC2CARLA_EGO_LIGHT`` overrides it for
+    one run; ``none`` there turns it off.
+    """
+    override = (_env("OSC2CARLA_EGO_LIGHT") or "").strip().lower()
+    if override in EGO_LIGHTS:
+        return override
+    if override in ("none", "off", "unset"):
+        return None
+    declared = str(intent.get("ego_light") or "").strip().lower()
+    return declared if declared in EGO_LIGHTS else None
+
+
 def resolve_duration(evaluation: Dict[str, Any], intent: Dict[str, Any],
                      parameters: Dict[str, Any]) -> Tuple[float, str]:
     """Simulated seconds to run, and where the number came from.
@@ -707,11 +754,20 @@ def build_command(scenario_path: str, backend: str, town: Optional[str],
                     "--port", _env("OSC2CARLA_CARLA_PORT") or "2000",
                     "--carla-timeout", "300"]
     else:
-        # A whole-map preference: which exit drive() takes at a junction. The
-        # highway ports never cross one, hence the harmless default.
-        command += ["--junction-turn", str(intent.get("junction_turn") or "straight")]
         if town:
             command += ["--town", town]
+    # Which exit the ego's route takes where a lane branches -- a property of the
+    # scenario, declared in this repository's benchmark config beside the rest of
+    # its intent, and now passed on BOTH backends. It used to go to the local one
+    # only, which left the CARLA arm walking next()[0] with no rule at all: on
+    # red_light that handed the ego a left turn 19 m before a junction it is
+    # supposed to cross straight through. The highway families never branch,
+    # hence the harmless default.
+    command += ["--junction-turn", resolve_junction_turn(intent)]
+    # The signal phase the ego meets, where the scenario is about one.
+    ego_light = resolve_ego_light(intent)
+    if ego_light:
+        command += ["--ego-light", ego_light]
     if _env_flag("OSC2CARLA_RECORD_VIDEO"):
         command += ["--record-video", os.path.join(output_dir, family + ".mp4"),
                     # One frame is captured per simulation tick, so the
@@ -925,7 +981,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         "scenario_map_file": osc_map,
         "ego_binding": ego_binding or "(first vehicle in the scenario)",
         "town": town or osc_map,
-        "junction_turn": intent.get("junction_turn") if backend == "pygame" else None,
+        "junction_turn": resolve_junction_turn(intent),
+        "ego_light": resolve_ego_light(intent),
         "sim_duration_requested": duration,
         "sim_duration_source": duration_source,
         "fixed_dt": fixed_dt,

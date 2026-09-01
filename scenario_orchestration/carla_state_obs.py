@@ -37,6 +37,8 @@ import math
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
+from osc2carla.backend import route as route_plan
+
 #: Objects further than this from the ego are not serialized. The policy applies
 #: its own, tighter, model-specific gate; this only keeps the document small on a
 #: busy map.
@@ -111,10 +113,17 @@ class StateObservationBuilder:
     route_points: int = ROUTE_POINTS
     route_first_m: float = ROUTE_FIRST_M
     route_step_m: float = ROUTE_STEP_M
+    #: Which exit the route takes where a lane branches. ``None`` takes the
+    #: process-wide default, which ``osc2carla/cli.py`` sets from
+    #: ``--junction-turn`` -- this builder is reached through a policy named by
+    #: class and can be given no command-line argument of its own.
+    turn_preference: Optional[str] = None
     notes: List[str] = field(default_factory=list)
     #: Set once, so a run report can say the route was short rather than leaving
     #: the policy's own padding to look like a full route.
     short_routes: int = 0
+    #: The one plan this ego drives, walked at the spawn on the first build.
+    plan: Any = None
 
     # ------------------------------------------------------------------ #
     def build(self, actor, speed_mps: float) -> Dict[str, Any]:
@@ -263,48 +272,30 @@ class StateObservationBuilder:
     def _route(self, ego: EgoFrame, actor) -> List[List[float]]:
         """``route_points`` ego-frame points along the ego's intended route.
 
-        Sampled with the same ``waypoint.next()[0]`` rule the compiled ``drive()``
-        behaviour uses, so a policy inherits the identical path through a
-        junction -- including which exit it takes. Route conditioning is what
-        tells a planner which way it is meant to go, so it has to be the route
-        the scenario is about, not a straight line.
+        A slice of the one plan this ego drives, walked once from its spawn by
+        ``osc2carla/backend/route.py`` and sampled here at the spacing PlanT and
+        its relatives were trained on. It is deliberately NOT re-derived from the
+        ego's live position: that projects onto whichever junction connector
+        happens to be nearest, which on Town10HD_Opt hands the ego a left turn
+        19 m before a junction it is supposed to cross. Route conditioning tells
+        a planner which way it is meant to go, so it has to be the route the
+        scenario is about -- and it has to be the same route on every tick.
 
         Points are never invented. A route that runs out is returned short and
         counted, so the policy's own padding is visible in the report rather than
         looking like a full route.
         """
-        if self.carla_map is None:
-            return []
-        try:
-            wp = self.carla_map.get_waypoint(actor.get_location(),
-                                             project_to_road=True)
-        except (RuntimeError, AttributeError):        # pragma: no cover
-            return []
-        if wp is None:
-            return []
-
-        picked: List[List[float]] = []
-        # Walk in route_step_m increments and start emitting at route_first_m,
-        # so the spacing the policy was trained on is the spacing it gets.
-        travelled = 0.0
-        guard = 0
-        limit = int((self.route_first_m
-                     + self.route_points * self.route_step_m) / self.route_step_m) + 8
-        while len(picked) < self.route_points and guard < limit:
-            guard += 1
-            try:
-                nxt = wp.next(self.route_step_m)
-            except (RuntimeError, AttributeError):    # pragma: no cover
-                break
-            if not nxt:
-                break
-            wp = nxt[0]
-            travelled += self.route_step_m
-            if travelled + 1e-9 < self.route_first_m:
-                continue
-            tf = wp.transform
-            x, y, _z = ego.to_ego(tf.location.x, tf.location.y, None)
-            picked.append([x, y])
+        if self.plan is None:
+            if self.carla_map is None:
+                return []
+            self.plan = route_plan.plan_for(self.carla_map, actor,
+                                            preference=self.turn_preference)
+        location = actor.get_location()
+        world_points = self.plan.ahead(location.x, location.y,
+                                       first_m=self.route_first_m,
+                                       step_m=self.route_step_m,
+                                       count=self.route_points)
+        picked = [list(ego.to_ego(x, y, None)[:2]) for x, y, _h in world_points]
         if len(picked) < self.route_points:
             self.short_routes += 1
         return picked
@@ -328,6 +319,8 @@ class StateObservationBuilder:
             "route": {"points": self.route_points,
                       "first_m": self.route_first_m,
                       "step_m": self.route_step_m,
-                      "short": self.short_routes},
+                      "short": self.short_routes,
+                      "plan": self.plan.describe() if self.plan is not None
+                              else None},
             "bev": "injected" if self.bev is not None else None,
         }
