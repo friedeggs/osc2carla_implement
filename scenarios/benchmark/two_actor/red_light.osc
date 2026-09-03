@@ -1,0 +1,277 @@
+import "domain.osc"
+
+# =============================================================================
+# EXPERIMENT 006 TWO-ACTOR VARIANT.  Not the benchmark file -- see
+# ../red_light.osc for that one, which experiments 001-005 report and which
+# this file must not be confused with.
+#
+# What differs, and only this:
+#
+#   1. THE CAST IS CUT TO 2 VEHICLES (ego, violator).
+#      `lead` and `stopper` are dropped. The stopper was a visual contrast on
+#      the violator's own approach that never touched the ego's path, so
+#      removing it cannot change the conflict. The lead is the consequential
+#      one and is called out in the design: experiment 004-calibrated already
+#      measured that removing a scripted vehicle from in front of a crawling
+#      ego moved PlanT 2.0's mean speed on this family from 3.08 m/s to 1.12
+#      m/s, because the follower had been shoving the ego up the road. So this
+#      cast change is expected to move this family's numbers, and no
+#      measurement from 004 or 005 is carried into it.
+#
+#   2. THREE DECLARED TRIGGERS, on the pattern "a spawn point, a speed and a
+#      gap": `violator_spawn`, `v_violator`, `release_gap`.
+#      They are `var` declarations, so `OSC2CARLA_SCENARIO_VARS` rewrites them
+#      and the materialized .osc in each run directory is exactly what ran
+#      (run.py :: materialize_scenario).  Experiment 006 calibrates two values
+#      for each -- a high and a low -- in a sequential preprocessing phase, then
+#      grid-searches the 2x2x2 corners.  experiments/006-grid/triggers.py owns
+#      the values and `--why` prints their derivation.
+#
+# Nothing else moves: same map, same junction or road, same conflict geometry,
+# same speeds where they are not triggers, same monitors, same termination
+# guard.  A difference in the results against the benchmark file is the cast
+# and the triggers, and is not a second implementation of the family.
+# =============================================================================
+
+# Red-light violation at a signalised intersection (Town10HD_Opt, junction 189).
+#
+# Natural-language scenario:
+#
+#   The ego vehicle is crossing an intersection.  There is surrounding traffic
+#   on both the ego's road and the crossing road.  While the ego is inside the
+#   intersection, one of the vehicles on the crossing road runs its red light
+#   and rams the ego from the side.
+#
+# Stage geometry (Town10HD_Opt junction 189, centre ~(-47.8, 20.4)):
+#
+#                       N  ^ +y
+#                          |
+#         ...............  |  ...............
+#         westbound  y=16.6 -->  EGO road  (the ego travels -x)
+#         ---------------[ JUNCTION 189 ]---------------
+#                          |
+#                     x = -48.8  northbound cross road (+y)
+#                          |          violator
+#
+#   * conflict point = (-48.75, 16.60): where the ego's westbound lane and the
+#     violator's northbound lane intersect.
+#   * ego enters from the east on the y = 16.6 lane, 50 m out.
+#   * violator approaches from the north on the x = -48.8 lane, 42 m out, so it
+#     arrives at the conflict point at roughly the same moment as the ego.
+#     (CARLA's y axis points south, so the violator's +y heading enters the
+#     junction from the ego's right and strikes the ego's right flank.)
+#
+# Actors (2 vehicles + 1 reference marker):
+#   ego      Tesla Model 3 (camera vehicle), crossing westbound on green.
+#   violator CarlaCola truck on the crossing road: does not slow for its red
+#            signal and T-bones the ego inside the junction.  Its start
+#            station is `violator_spawn` metres south of the conflict point.
+#
+# Timeline:
+#   t = 0        both vehicles spawn at rest, then launch on @go_signal.
+#                The violator waits: it is released by the ego's own approach,
+#                not by the clock (see `release_gap`).
+#   t ~ 0-5      ego cruises westbound at 30 kph on a now-empty lane.  The
+#                timings below are the AUTHORED file's, measured with a lead
+#                vehicle in front of the ego; with the lead gone the ego is no
+#                longer following anything, so treat them as the shape of the
+#                episode rather than as its clock.
+#   t = 4.55     ego crosses the stop line; the monitor emits EGO_IN_JUNCTION.
+#   t = 6.25     ego reaches the conflict area; the monitor emits
+#                EGO_AT_CONFLICT_POINT and the violator commits, accelerating
+#                to v_violator_run to beat the phase.
+#   t = 6.55     violator strikes the ego's right flank inside the intersection
+#                (first contact, peak impulse ~12300).  The ego-mounted
+#                collision sensor overlays every contact.
+#   t = 6.55-18  violator keeps pushing the ego across the junction.
+#   t = 18       termination guard.
+#
+# Observed on CARLA 0.9.16 (Town10HD_Opt) over two runs: 17 collision events,
+# first contact at t = 6.55 s both times, peak impulse 12241-12357, sole
+# collision partner `violator` -- the intended one.  Exact counts shift with CARLA build and physics substepping.
+#
+# Difference from the ram version of this file, which the results recorded
+# before this one correspond to: the violator used to switch to
+# ram(target: ego) on @EGO_AT_CONFLICT_POINT.  ram is not an OSC2Runner
+# construct -- it appears nowhere in the paper, whose action vocabulary
+# (Table 2, Listings 1-3) has no pursuit primitive -- so the violator instead
+# does the only thing a red-light runner actually does: it does not brake.
+# drive() has no yielding or collision-avoidance term, so a vehicle that keeps
+# driving its lane through the box IS a vehicle that has run the red.  The
+# substitution costs almost nothing here, because the violator was already on
+# a collision course before the trigger: first contact moves from 6.50 s to
+# 6.55 s.  The peak impulse RISES, from ~5300 to ~12300: ram steered the truck
+# onto the ego and bled speed doing it, where holding its own lane at
+# v_violator_run puts the full 40 kph squarely into the ego's flank.  The event
+# count falls from ~417 to 17, because the truck no longer keeps homing on the
+# wreck for the rest of the run.  collision_occurred and the intended partner
+# are unchanged, and those are what expect_collision and intended_partner
+# test.
+#
+# No follower, and why.  This file used to place a Mercedes coupe 16 m behind
+# the ego in the ego's own lane, queued through the junction.  drive() has no
+# car-following term, so that vehicle brakes for nothing: whenever the ego is
+# slower than the scripted ego this file was tuned against, it rear-ends it.
+# Measured over the 12 evaluable cells of experiment 001, it hit the ego before
+# the violator arrived in nine of them -- including cells where the intended
+# conflict was being delivered and the episode had already ended.  Its own
+# changelog in left_turn.osc records `follow_gap` being widened once for exactly
+# this reason, against exactly one ego.  Tuning it per policy would make the
+# baseline unfalsifiable, so it is removed instead: the scenario's content is
+# the violator, and nothing here needed a car behind the ego to state it.
+#
+# Trigger timing is a parameter.  `release_gap` is the ego's remaining distance
+# to the conflict point when the violator is let go.  Releasing on the ego's
+# geometry rather than on the clock is what makes the timing independent of how
+# fast the ego drives -- a policy that crawls would otherwise always meet a
+# hero that had long since gone through -- and it is the knob a grid search
+# over conflict timing turns (experiment 002 section 2, experiment 004).  The
+# default is wider than the ego's own spawn distance, so it fires on the first
+# tick and reproduces the launch-at-t=0 behaviour this file had before.
+#
+# Signal note: this baseline does not implement traffic lights (see "Coverage
+# vs. the paper" in README.md) -- there is no action to set or read a signal
+# phase, and scripted actors never yield to CARLA's own signals.  The red light
+# is therefore expressed as behaviour and geometry: the violator enters the
+# conflict area at speed on the ego's crossing phase and never yields, while
+# and nothing on that approach yields.  (The authored file made the point with
+# a second vehicle that DID stop at the line; this variant has no room for it,
+# so the violation is legible from the violator's behaviour alone.)
+#
+scenario red_light:
+    carla_map: map with:
+        keep(it.map_file == "Town10HD_Opt")
+
+    env: environment
+
+    # --- Ego (westbound road, y ~ 16.6) ---
+    ego: vehicle with:
+        keep(it.name == "ego")
+        keep(it.model == "vehicle.tesla.model3")
+
+    # --- Crossing-road traffic (northbound road, x ~ -48.8) ---
+    violator: vehicle with:
+        keep(it.name == "violator")
+        keep(it.model == "vehicle.carlamotors.carlacola")
+
+    # Ground decal marking the conflict point of the two lanes. It is the
+    # fixed reference the junction-occupancy conditions are written against.
+    # static.prop.dirtdebris01 is the flattest available prop and very rarely
+    # reports contact -- but it is NOT collision-free: driving over it does
+    # occasionally raise a collision event (measured in ~5% of benchmark runs),
+    # so metrics must discount non-vehicle contacts rather than trust the prop.
+    # z is set below grade so the decal sits flush with the road (the
+    # initializer lifts every spawn by 0.5 m).
+    conflict_point: stationary_object with:
+        keep(it.name == "conflict_point")
+        keep(it.model == "static.prop.dirtdebris01")
+
+    # --- Speeds ---
+    var v_ego: speed = 30kph
+    # EXPERIMENT 006 TRIGGER (the "speed" limb).
+    var v_violator: speed = 32kph
+    # Speed it accelerates to once it has committed to the red. DERIVED from
+    # the trigger above, deliberately: one knob then moves the approach and the
+    # run phase coherently, instead of letting a searched run speed contradict
+    # the approach speed it is supposed to be an acceleration from.
+    var v_violator_run: speed = v_violator + 8kph
+
+    # --- Distances ---
+    # The conflict point's own y, so the violator's start station can be
+    # written as a distance from it rather than as a bare coordinate.
+    var conflict_y: length = 16.60m
+    # EXPERIMENT 006 TRIGGER (the "spawn point" limb): the violator's start
+    # distance SOUTH of the conflict point along its own northbound lane.
+    # 42.30 m reproduces the authored y = -25.70, since 16.60 - 42.30 = -25.70.
+    # The lane is straight and axis-aligned in y over the whole ladder, so this
+    # is an exact station and not a linearization -- unlike overtake.osc's
+    # oncoming car, which is on a bend and needs a topological placement.
+    # Smaller means the truck starts closer and arrives earlier.
+    var violator_spawn: length = 42.30m
+
+    # The ego has entered the junction box once it is inside this radius of the
+    # conflict point (junction 189 measures ~20 m from centre to stop line).
+    var junction_entry_radius: length = 20m
+    # ...and it occupies the conflict area -- the patch of the junction that the
+    # violator's lane actually crosses -- inside this one.  The violator commits
+    # on the inner event, not the outer one: at 30 kph the ego clears the
+    # crossing lane in about 0.3 s, so a ram launched a whole second early turns
+    # into a rear-end pursuit down the ego's lane instead of a side impact.
+    var conflict_radius: length = 6m
+    # EXPERIMENT 006 TRIGGER (the "gap" limb).
+    # The ego's remaining distance to the conflict point when the violator is
+    # released.  Larger means the violator goes earlier relative to the ego.
+    # The ego spawns 50 m out, so the default fires on the first tick and the
+    # violator launches with everyone else, as it did before this was a knob.
+    var release_gap: length = 70m
+
+    do parallel:
+        # ---- Environment: bright daylight, sun high enough to read signals ----
+        env.assign_celestial_position(azimuth: 0deg, elevation: 70deg)
+
+        # ---- Conflict-point reference marker ----
+        conflict_point.assign_position() with:
+            position(x: -48.75, y: 16.60, z: -0.40, at: start)
+
+        # ---- EGO: crossing the intersection westbound ----
+        serial:
+            ego.assign_position() with:
+                position(x: 1.31, y: 16.69, z: 0.00, h: 3.1444rad, at: start)
+                speed(0kph, at: start)
+
+            wait @go_signal
+
+            # The ego never reacts: it holds its crossing speed throughout, so
+            # the collision is entirely the violator's doing.
+            one_of:
+                ego.drive() with:
+                    speed(v_ego)
+                wait elapsed(17s)
+
+        # ---- VIOLATOR: runs the red and rams the ego ----
+        serial:
+            # `violator_spawn` south of the conflict point. At the nominal
+            # 42.30 m and v_violator that puts the truck on the crossing lane
+            # at about the same moment as the ego, which is the authored
+            # scenario; the trigger moves that meeting.
+            violator.assign_position() with:
+                position(x: -48.85, y: conflict_y - violator_spawn, z: 0.00, h: 1.5783rad, at: start)
+                speed(0kph, at: start)
+
+            wait @go_signal
+
+            # Released by the ego's geometry, not by the clock. See the header:
+            # this is the trigger-timing parameter, and a plain condition rather
+            # than rise() so a release_gap wider than the ego's spawn distance
+            # fires immediately instead of waiting for an edge that never comes.
+            wait ego.object_distance(reference: conflict_point, direction: euclidean) < release_gap
+
+            # Phase 1: approach the signal without slowing.  Lane following
+            # until the ego reaches the conflict area.
+            one_of:
+                violator.drive() with:
+                    speed(v_violator)
+                wait @EGO_AT_CONFLICT_POINT
+
+            # Phase 2: enter on the red.  It does not brake and it does
+            # not yield -- it accelerates to beat the phase and holds its own
+            # lane through the box, which puts it across the ego's path.
+            # drive() has no yielding term, so "runs the red" needs no
+            # special action: it is the absence of any braking at all.
+            emit RED_LIGHT_RUN
+            one_of:
+                violator.drive() with:
+                    speed(v_violator_run)
+                    keep_lane()
+                wait elapsed(11s)
+
+        # ---- Conflict monitor: how far the ego has committed to the junction ----
+        serial:
+            wait @go_signal
+            wait rise(ego.object_distance(reference: conflict_point, direction: euclidean) < junction_entry_radius)
+            emit EGO_IN_JUNCTION
+            wait rise(ego.object_distance(reference: conflict_point, direction: euclidean) < conflict_radius)
+            emit EGO_AT_CONFLICT_POINT
+
+        # ---- Termination guard ----
+        wait elapsed(18s)

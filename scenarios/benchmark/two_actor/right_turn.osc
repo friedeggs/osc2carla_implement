@@ -1,0 +1,288 @@
+import "domain.osc"
+
+# =============================================================================
+# EXPERIMENT 006 TWO-ACTOR VARIANT.  Not the benchmark file -- see
+# ../right_turn.osc for that one, which experiments 001-005 report and which
+# this file must not be confused with.
+#
+# What differs, and only this:
+#
+#   1. THE CAST IS CUT TO 2 VEHICLES (ego, rear_ender).
+#      `adjacent_a`, `adjacent_b` and `opposing` are dropped, and the authored
+#      header is what licenses it: it states that the ego's turn arc 'never
+#      drops below y = 28.3, so it crosses neither the inner eastbound lane (y
+#      = 24.6) nor the westbound carriageway (y = 16.9); the background traffic
+#      there cannot interfere with the result'. So unlike red_light and
+#      left_turn, this trim is expected to be inert. `rear_ender` is the
+#      conflict itself and the same header says removing it 'would delete the
+#      scenario rather than repair it'.
+#
+#   2. THREE DECLARED TRIGGERS, on the pattern "a spawn point, a speed and a
+#      gap": `rear_spawn`, `v_rear`, `release_gap`.
+#      They are `var` declarations, so `OSC2CARLA_SCENARIO_VARS` rewrites them
+#      and the materialized .osc in each run directory is exactly what ran
+#      (run.py :: materialize_scenario).  Experiment 006 calibrates two values
+#      for each -- a high and a low -- in a sequential preprocessing phase, then
+#      grid-searches the 2x2x2 corners.  experiments/006-grid/triggers.py owns
+#      the values and `--why` prints their derivation.
+#
+# Nothing else moves: same map, same junction or road, same conflict geometry,
+# same speeds where they are not triggers, same monitors, same termination
+# guard.  A difference in the results against the benchmark file is the cast
+# and the triggers, and is not a second implementation of the family.
+# =============================================================================
+
+# Right turn out of a side road, rear-ended by traffic already on the lane the
+# ego turns onto (Town10HD_Opt, junction 841).
+#
+# Natural-language scenario:
+#
+#   The ego turns right out of the minor arm of an intersection onto a busier
+#   road, against background traffic in both directions.  It is still slow from
+#   the corner when it settles into its new lane.  A vehicle already travelling
+#   on that lane arrives from behind and, instead of braking for the car that
+#   has just pulled out in front of it, runs into the back of it.
+#
+# Stage geometry (junction 841, centre ~(41.9, 23.7)):
+#
+#                                 |  x = 44 minor arm, ego runs -y
+#                                 v
+#   rear_ender --->  y = 28.2 eastbound  [ J841 ]  ---> ego merges in at x ~ 55
+#   ==========================================================================
+#                    y = 24.6 eastbound  (empty in this variant)
+#   ------------------------------- median -----------------------------------
+#                    y = 16.9 westbound  (empty in this variant)
+#
+#   * ego comes down the north arm with ~9 m of approach, then a 20 m right-turn
+#     arc that lands it on the y = 28.3 lane heading +x.
+#   * merge point = (55.00, 28.35), where the arc joins that lane.
+#   * rear_ender approaches on that SAME lane with 61 m of clean straight road
+#     ahead of it -- it is already on the destination lane, coming up from
+#     lower x, i.e. from directly behind the ego's merge -- and 40 m more of
+#     straight beyond the merge point before the lane bends into the next
+#     junction, which is the distance the rear-end has to happen in.
+#   * the turn arc never drops below y = 28.3, so it crosses neither the inner
+#     eastbound lane (y = 24.6) nor the westbound carriageway (y = 16.9).  In
+#     the authored file that is why the background traffic there could not
+#     interfere with the result; here it is why removing it should not change
+#     the result either, which the design treats as a checkable prediction.
+#
+# Actors (2 vehicles + 1 reference marker):
+#   ego         Tesla Model 3 (camera vehicle), turning right out of the arm.
+#   rear_ender  Nissan Patrol on the destination lane; does not brake.  Its
+#               start station is `rear_spawn` metres west of the merge point.
+#
+# Timeline:
+#   t = 0        both vehicles spawn at rest, launch on @go_signal. The
+#                rear_ender waits: it is released by the ego's own approach to
+#                the merge point, not by the clock (see `release_gap`).
+#   t ~ 0-2      ego pulls out of the arm; rear_ender builds speed on its
+#                61 m approach.
+#   t ~ 2-5.1    ego works around the turn arc at v_turn, brake lights on.
+#   t ~ 5.1      ego settles into the y = 28.3 lane, still slow; the monitor
+#                emits EGO_MERGED.  rear_ender is ~24 m back and closing at
+#                ~4 m/s.
+#   t ~ 8.4      rear_ender, which never braked, runs squarely into the back of
+#                the ego (peak impulse ~5160).  The ego-mounted collision
+#                sensor overlays every contact.
+#   t ~ 8.4-24   the Patrol pushes the wreck on up the road.
+#   t = 24       termination guard.
+#
+# Observed on CARLA 0.9.16 (Town10HD_Opt) over three identical runs: first
+# contact at 8.40, 8.40 and 8.45 s, ~306 collision events, peak impulse
+# 4676-5163, sole collision partner `rear_ender` -- the intended one.  Exact
+# counts shift with CARLA build and physics substepping.
+#
+# Differences from the ram version of this file, which the results recorded
+# before this one correspond to:
+#   * v_rear is 34 kph rather than 30, and rear_ender spawns at x = -6 rather
+#     than x = -20 (which this variant expresses as rear_spawn = 61 m).  ram accelerated it to full throttle regardless of its
+#     declared speed; without it the declared speed is the actual speed, and
+#     at 30 kph from 75 m back the gap only closes to ~3.5 m before both
+#     vehicles reach the next junction and part company.  The peak impulse
+#     falls from ~18600 to ~5160 for the same reason -- nothing here is at
+#     full throttle, it is a 34 kph vehicle running into a 20 kph one, which
+#     is what the declared speeds say should happen.
+#   * collision_occurred and the intended partner are unchanged, and those are
+#     what expect_collision and intended_partner test.
+#
+# The rear_ender is NOT an incidental follower, and is not removed.  The
+# `follower` bindings in red_light.osc and left_turn.osc were: cars queued
+# behind the ego that rear-ended it because drive() has no car-following term,
+# ending episodes before the intended conflict was delivered (experiment 001
+# section 9.2).  Here the vehicle arriving from behind on the destination lane
+# IS the conflict -- the file's own marker is called `merge_point`, not
+# `conflict_point` -- so removing it would delete the scenario rather than
+# repair it.  What it needs instead is a metric that can score a merge conflict,
+# which is `metrics/scenario/merge.py`.
+#
+# Trigger timing is a parameter -- one of THREE in this variant.  `release_gap`
+# is the ego's remaining distance
+# to the merge point when the rear_ender is let go.  Releasing on the ego's
+# geometry rather than on the clock makes the conflict timing independent of how
+# fast the ego takes the corner, which is what lets one grid search cover a fast
+# policy and a slow one (experiment 002 section 2, experiment 004).  The ego
+# spawns ~25 m from the merge point, so the default fires on the first tick and
+# reproduces the launch-at-t=0 behaviour this file had before.
+#
+# Junction choice: junction 841 is used because the ego's right turn and
+# rear_ender's straight-through movement land on the same lane, and because
+# rear_ender's approach is a clean straight run. drive() re-projects the actor
+# onto a waypoint every tick, so a vehicle asked to follow a long connecting
+# road THROUGH a large junction box can be captured by an overlapping
+# connecting road and steered off course; keeping rear_ender on an ordinary
+# straight lane avoids that. See also the note in left_turn.osc about turns
+# being a property of the approach lane rather than anything the scenario can
+# request.
+#
+# Modelling note: this baseline has no car-following or braking driver model
+# -- drive() is a waypoint+PID controller that neither sees other vehicles nor
+# yields -- so "the driver behind failed to brake" needs no action at all.  It
+# is expressed by rear_ender simply continuing to drive its lane at v_rear
+# while the ego is slow in front of it, with keep_lane() holding it in that
+# lane.  The impact geometry (in-lane, from directly behind) is what makes it
+# a rear-end rather than the side impact in red_light.osc.
+#
+scenario right_turn:
+    carla_map: map with:
+        keep(it.map_file == "Town10HD_Opt")
+
+    env: environment
+
+    # Declared first, matching the other benchmark scenarios: the camera
+    # vehicle.  Nothing is placed relative to it in this variant.
+    ego: vehicle with:
+        keep(it.name == "ego")
+        keep(it.model == "vehicle.tesla.model3")
+
+    rear_ender: vehicle with:
+        keep(it.name == "rear_ender")
+        keep(it.model == "vehicle.nissan.patrol")
+        keep(it.color == "80,80,80")
+
+    # Marks where the turn arc joins the destination lane.  Same reference
+    # trick as red_light.osc: static.prop.dirtdebris01 is the flattest ground
+    # decal available, though not strictly collision-free (see red_light.osc),
+    # and z is set below grade to cancel the initializer's 0.5 m spawn lift.
+    merge_point: stationary_object with:
+        keep(it.name == "merge_point")
+        keep(it.model == "static.prop.dirtdebris01")
+
+    # --- Speeds ---
+    # Pull-out speed off the minor arm; there is only ~9 m before the corner.
+    var v_ego: speed = 22kph
+    # Cornering speed. The controller has no lateral limit, so the slow-down
+    # has to be commanded explicitly -- and it is what leaves the ego slow
+    # enough for rear_ender to run into.
+    var v_turn: speed = 16kph
+    # Speed the ego pulls away at once it is straight again. A car that has
+    # just come round a corner is still slow.
+    var v_exit: speed = 20kph
+    # EXPERIMENT 006 TRIGGER (the "speed" limb).  Closing speed on the ego.
+    # ram used to override this with full throttle; the declared speed is now
+    # the actual speed, so it has to be high enough to run the gap down over
+    # the ~40 m of straight before the next junction.  The bottom of this
+    # trigger's ladder is where the rear-end stops being reachable at all,
+    # which the design reports as a result rather than as a bad probe.
+    var v_rear: speed = 34kph
+
+    # --- Distances ---
+    # The merge point's own x, so the rear_ender's start station can be written
+    # as a distance from it rather than as a bare coordinate.
+    var merge_x: length = 55.00m
+    # EXPERIMENT 006 TRIGGER (the "spawn point" limb): the rear_ender's start
+    # distance WEST of the merge point (55.00, 28.35) along the destination
+    # lane.  61.00 m reproduces the authored x = -6.00, since 55.00 - 61.00 =
+    # -6.00, and matches the header's "61 m of clean straight road".  The lane
+    # is straight and axis-aligned in x over the whole ladder, so this is an
+    # exact station and not a linearization.  Larger means it starts further
+    # back and arrives later.
+    var rear_spawn: length = 61.00m
+    # The ego commits to the corner this far from the merge point.
+    var corner_radius: length = 18m
+    # ...and counts as established in the destination lane inside this one.
+    var merge_radius: length = 8m
+    # EXPERIMENT 006 TRIGGER (the "gap" limb).
+    # The ego's remaining distance to the merge point when the rear_ender is
+    # released. Larger means it arrives earlier relative to the ego's merge.
+    # The ego spawns ~25 m out, so the default fires on the first tick.
+    var release_gap: length = 40m
+
+    do parallel:
+        env.assign_celestial_position(azimuth: 0deg, elevation: 65deg)
+
+        merge_point.assign_position() with:
+            position(x: 55.00, y: 28.35, z: -0.40, at: start)
+
+        # ---- EGO: right turn out of the minor arm ----
+        serial:
+            ego.assign_position() with:
+                position(x: 44.01, y: 50.50, z: 0.00, h: -1.5839rad, at: start)
+                speed(0kph, at: start)
+
+            wait @go_signal
+
+            one_of:
+                ego.drive() with:
+                    speed(v_ego)
+                wait rise(ego.object_distance(reference: merge_point, direction: euclidean) < corner_radius)
+
+            emit EGO_AT_CORNER
+            ego.set_lights(mode: brake)
+
+            # Take the corner at v_turn. drive() follows next()[0], which for
+            # this arm is the right-turn connection onto the y = 28.3 lane.
+            one_of:
+                ego.drive() with:
+                    speed(v_turn)
+                wait @EGO_MERGED
+
+            # Straighten up and pull away -- or would, if rear_ender were not
+            # already closing on it.
+            one_of:
+                ego.drive() with:
+                    speed(v_exit)
+                wait elapsed(15s)
+
+        # ---- REAR_ENDER: already on the destination lane, does not brake ----
+        serial:
+            # `rear_spawn` west of the merge point, on the destination lane.
+            rear_ender.assign_position() with:
+                position(x: merge_x - rear_spawn, y: 28.12, z: 0.00, h: 0.0028rad, at: start)
+                speed(0kph, at: start)
+
+            wait @go_signal
+
+            # Released by the ego's geometry, not by the clock. See the header:
+            # this is the trigger-timing parameter, and a plain condition rather
+            # than rise() so a release_gap wider than the ego's spawn distance
+            # fires immediately instead of waiting for an edge that never comes.
+            wait ego.object_distance(reference: merge_point, direction: euclidean) < release_gap
+
+            one_of:
+                rear_ender.drive() with:
+                    speed(v_rear)
+                wait @EGO_MERGED
+
+            # The ego is now in the lane ahead, still slow from the corner.
+            # What makes this a rear-end is precisely what is ABSENT here: no
+            # change_speed, no brake, no yielding term in drive().  The
+            # vehicle simply carries on into the space the ego occupies.
+            # rear_ender is already established on the destination lane and
+            # junction 841 was chosen so its movement is straight-through, so
+            # no homing is needed to keep it there -- keep_lane() holds it.
+            emit REAR_ENDER_COMMITTED
+            one_of:
+                rear_ender.drive() with:
+                    speed(v_rear)
+                    keep_lane()
+                wait elapsed(15s)
+
+        # ---- Monitor: has the ego established itself in the new lane? ----
+        serial:
+            wait @go_signal
+            wait rise(ego.object_distance(reference: merge_point, direction: euclidean) < merge_radius)
+            emit EGO_MERGED
+
+        # ---- Termination guard ----
+        wait elapsed(24s)
