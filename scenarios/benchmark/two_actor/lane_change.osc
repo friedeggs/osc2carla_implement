@@ -140,10 +140,28 @@ scenario lane_change:
     var v_lead_braked: speed = 8kph
     # A shade under the ego, which is what closes the small head start below
     # into "abeam" by the time the ego runs out of room.
+    #
+    # EXPERIMENT 007 TRIGGER (the "speed" limb), replacing `v_lead_braked`.
+    # The scenario's intended collision partner is `blocker`, not `lead`, and
+    # 007 phase 1 measured why that matters: at 52 kph against a policy-driven
+    # ego doing ~35, the blocker is not "a shade under the ego" at all -- it
+    # runs from 6.9 m ahead at spawn to 99 m ahead by t = 20 s, and no value of
+    # the three original triggers (all of which govern `lead`) can bring it
+    # back. The authored 52 was solved against the SCRIPTED ego's 54.
     var v_blocker: speed = 52kph
 
     # --- Distances ---
     var lead_gap: length = 34m
+    # The blocker's head start over the ego, along the shared -x direction of
+    # travel.
+    #
+    # EXPERIMENT 007 TRIGGER (the "spawn point" limb). The `.osc` hard-coded
+    # this as x = -156.00, which is exactly -150.00 - 6.00, so the nominal
+    # reproduces the authored scenario. Both vehicles travel this carriageway
+    # straight and axis-aligned in x (heading -3.1402 rad), so
+    # `x: ego_x - blocker_gap` is an exact station and not a linearization --
+    # the same argument the three intersection files' spawn triggers rest on.
+    var blocker_gap: length = 6m
     # The lead brakes when the ego has closed to here ...
     #
     # EXPERIMENT 006 TRIGGER (the "gap" limb). The monitor below fires
@@ -209,7 +227,7 @@ scenario lane_change:
         # ---- BLOCKER: occupies the lane the ego wants, and keeps it ----
         serial:
             blocker.assign_position() with:
-                position(x: -156.00, y: 16.24, z: 7.01, h: -3.1402rad, at: start)
+                position(x: -150.00 - blocker_gap, y: 16.24, z: 7.01, h: -3.1402rad, at: start)
                 speed(0kph, at: start)
 
             wait @go_signal
