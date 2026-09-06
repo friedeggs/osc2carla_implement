@@ -48,6 +48,7 @@ import glob
 import math
 import os
 import queue
+import shutil
 import subprocess
 from typing import Any, List, Optional
 
@@ -338,26 +339,64 @@ class Recorder:
             reasons.append(problem)
         return self._no_encode("; ".join(reasons))
 
-    def _encode_ffmpeg(self) -> Optional[str]:
-        """h264 through the ffmpeg CLI, or why it could not be done.
+    def _ffmpeg_exe(self) -> Optional[str]:
+        """The first ffmpeg that can actually be run here, or None.
 
-        Tried first because it produces the most portable file. It is not always
-        available: the CARLA + torch image these runs happen in has no ffmpeg,
-        and an ffmpeg from the surrounding module tree is usually linked against
-        a newer libc than the image has.
+        Three places, in the order of how much each can be trusted:
+
+        ``$OSC2CARLA_FFMPEG``  an operator who knows what works on this node.
+        ``imageio_ffmpeg``     a pip package whose wheel carries a *static*
+                               ffmpeg with libx264 built in. That is the one
+                               that survives the container: the binary brings
+                               its own libc, so the mismatch that rules out an
+                               ffmpeg from the surrounding module tree does not
+                               apply to it. Putting it on the client's
+                               PYTHONPATH is enough.
+        ``ffmpeg`` on PATH     the normal case outside a container.
         """
+        explicit = os.environ.get("OSC2CARLA_FFMPEG")
+        if explicit:
+            return explicit
+        try:
+            import imageio_ffmpeg
+            return imageio_ffmpeg.get_ffmpeg_exe()
+        except Exception:  # noqa: BLE001
+            pass
+        return shutil.which("ffmpeg")
+
+    def _encode_ffmpeg(self) -> Optional[str]:
+        """h264 through an ffmpeg binary, or why it could not be done.
+
+        Tried first because it produces the file other tools can actually read.
+        H.264 is what Chromium-based viewers -- a browser, VSCode's preview --
+        decode, and the OpenCV fallback below cannot produce it at all.
+
+        It is not always available: the CARLA + torch image these runs happen in
+        has no ffmpeg, and an ffmpeg from the surrounding module tree is usually
+        linked against a newer libc than the image has. ``_ffmpeg_exe`` says
+        what is tried, and why imageio-ffmpeg is the one that works in-container.
+        """
+        exe = self._ffmpeg_exe()
+        if exe is None:
+            return ("no ffmpeg found (tried $OSC2CARLA_FFMPEG, imageio_ffmpeg, "
+                    "PATH)")
         cmd = [
-            "ffmpeg", "-y", "-loglevel", "error",
+            exe, "-y", "-loglevel", "error",
             "-framerate", str(self.fps),
             "-i", os.path.join(self.frames_dir, "frame_%05d.png"),
             "-c:v", "libx264", "-pix_fmt", "yuv420p",
+            # Bounded on purpose. x264 sizes its thread pool from the host's
+            # core count rather than the cgroup's, and on a loaded node that is
+            # ~100 threads thrashing against whatever else is still running --
+            # measured at a >100x slowdown, not a marginal one.
+            "-threads", "4", "-x264-params", "threads=4:lookahead-threads=1",
             self.output_video,
         ]
         try:
             completed = subprocess.run(cmd, check=False, stderr=subprocess.PIPE,
                                        universal_newlines=True)
         except OSError as exc:
-            return f"ffmpeg could not be run ({exc})"
+            return f"{exe} could not be run ({exc})"
         if completed.returncode != 0 or not os.path.exists(self.output_video):
             # Reported rather than swallowed. This used to return the output
             # path whatever ffmpeg did, so a failed encode looked exactly like a
@@ -400,8 +439,31 @@ class Recorder:
             writer.release()
             if os.path.exists(self.output_video) \
                     and os.path.getsize(self.output_video) > 1024:
+                if fourcc != "avc1":
+                    self._warn_not_h264(fourcc)
                 return None
         return "OpenCV could not open a writer for avc1 or mp4v"
+
+    def _warn_not_h264(self, fourcc: str) -> None:
+        """Say that the file, though valid, will not play in most viewers.
+
+        OpenCV's bundled FFmpeg has no H.264 *encoder* -- a licensing omission,
+        not a build accident -- so ``avc1`` cannot open and this is where the
+        fallback lands. What comes out is MPEG-4 Part 2, which every
+        Chromium-based viewer refuses to decode while reporting nothing at all.
+        Silent, that is indistinguishable from a corrupted file to whoever opens
+        it next, which is the whole reason this says something.
+        """
+        import sys
+        sys.stderr.write(
+            "[osc2carla] %s was encoded as '%s' (MPEG-4 Part 2), not H.264: no "
+            "usable ffmpeg was found and OpenCV has no H.264 encoder here. The "
+            "file is valid and plays in mpv/vlc, but Chromium-based viewers -- "
+            "a browser, VSCode's preview -- show nothing. Set $OSC2CARLA_FFMPEG "
+            "or put imageio-ffmpeg on PYTHONPATH to get H.264 directly, or "
+            "convert it after the fact:\n"
+            "  ffmpeg -i %s -c:v libx264 -pix_fmt yuv420p -threads 4 -y out.mp4"
+            "\n" % (self.output_video, fourcc, self.output_video))
 
     def _no_encode(self, reason: str) -> None:
         """Say what happened, and where the frames still are.
