@@ -10,11 +10,18 @@
     "overtake",
     "stop_sign"
   ],
-  "policy_interfaces": ["ego_policy_v1"],
-  "observation_spaces": ["state", "sensor"],
-  "action_spaces": ["control"],
+  "policy_interfaces": [
+    "ego_policy_v1"
+  ],
+  "observation_spaces": [
+    "state",
+    "sensor"
+  ],
+  "action_spaces": [
+    "control",
+    "waypoints"
+  ],
   "closed_loop": true,
-
   "entry_point": "scenario_orchestration/run.py",
   "native_scenarios": {
     "carla": {
@@ -42,10 +49,13 @@
     "red_light_violation": "red_light",
     "red_light_violation.osc": "red_light"
   },
-
   "sensor_rigs": {
     "declared_by": "the policy, through scenario_orchestration/policy.py's sensors(); osc2carla/backend/sensors.py attaches exactly what it returns and invents nothing",
-    "kinds": ["sensor.camera.rgb", "sensor.lidar.ray_cast", "sensor.other.radar"],
+    "kinds": [
+      "sensor.camera.rgb",
+      "sensor.lidar.ray_cast",
+      "sensor.other.radar"
+    ],
     "known": {
       "simlingo": "one 1024x512 fov-110 forward camera at (-1.5, 0, 2.0), the CARLA Leaderboard mounting",
       "tfv6": "three 384x384 fov-60 cameras at yaw -57.5/0/+57.5, one 64-channel LiDAR, four radars; the radar ORDER is part of the format"
@@ -53,9 +63,14 @@
     "backends": "carla only. The bundled local simulator provides sensor.other.collision and nothing else, so a sensor policy there is refused with a reason rather than driven against an empty rig.",
     "synchronisation": "each sensor has its own queue and a capture blocks for the measurement stamped with the tick being described, discarding anything older, so the frames and the pose a policy reasons over are one tick."
   },
-
   "policies": {
-    "native": ["idm", "idm_assertive", "idm_conservative", "constant", "scripted"],
+    "native": [
+      "idm",
+      "idm_assertive",
+      "idm_conservative",
+      "constant",
+      "scripted"
+    ],
     "external": "any ego_policy_v1 policy whose repository exposes scenario_orchestration/policy.py; it is loaded through scenario_orchestration/osc2carla_policy_bridge.py",
     "parameter_translation": {
       "desired_speed_mps": "v0",
@@ -65,7 +80,6 @@
       "comfort_decel_mps2": "b"
     }
   },
-
   "metrics": [
     "scenario_realized",
     "scenario_success",
@@ -74,18 +88,18 @@
     "time_to_event",
     "scenario_duration"
   ],
-
   "notes": {
     "identity": "Independent reimplementation of the OpenSCENARIO 2.1 -> CARLA compiler of arXiv:2604.16452. Scenarios are .osc source compiled to a py_trees behaviour tree; the native id of a family is its .osc file.",
     "closed_loop": "Declared true, and this disagrees with configs/algorithm/osc2runner.yaml, which declares false. The adversary timelines are compiled and open-loop, but their triggers are live monitors on the ego's state, and --ego-policy hands the ego's actuation to an external controller that is ticked once per simulated step against a fresh state observation. Only the compiled 'scripted' arm is open-loop end to end.",
-    "observation_spaces": "state and sensor, on the CARLA backend. Every policy receives ego pose, speed, the sampled route ahead (in the ego frame, resampled to the 1 m grid the reference agents index) and the closest leader on it; a policy that declares its own rig through sensors() additionally receives that rig's camera, LiDAR and radar measurements for the same tick. The rig is the policy's, never this repository's: a sensorimotor model is trained behind one set of intrinsics and mountings, and a rig chosen here would publish this repository's behaviour under the model's name. On the local backend only state is available, and a sensor policy is refused there.",
-    "action_spaces": "control only. A policy predicting waypoints or a trajectory must return the control its own lateral/longitudinal controllers produce alongside them -- which is what both installed sensorimotor adapters do, and re-deriving controls here would change their published closed-loop behaviour while still calling the result theirs.",
-    "ego_vehicle": "The scenario chooses it, and for the six conflict families it is vehicle.tesla.model3. SimLingo's released checkpoint was trained behind the leaderboard hero vehicle.lincoln.mkz_2020 (4.89 m vs 4.79 m), so its fixed camera mount sits marginally differently relative to the body than in training. Recorded because the policy's own README calls the ego vehicle load-bearing; not corrected, because the ego model is part of the scenario, not of the runner.",
-    "traffic_lights_and_a_policy_that_sees": "Read every sensor-policy result against this. The scenarios express a signal phase as behaviour and geometry -- there is no action to set or read one, and scripted actors never yield to CARLA's own signals (see the header of scenarios/benchmark/red_light.osc). A camera policy has no such exemption: CARLA's lights run their default cycle and are in frame, so the ego stops for them. Measured on red_light and left_turn, simlingo reported 'Remain stopped due to the red traffic light' and travelled 17-73 m where the analytic arm travelled 97 m, and the phase it meets differs between runs of the same file. The conflict a scenario stages therefore may or may not develop, which is a property of the scenario vocabulary meeting a policy that perceives, not a defect in the rig.",
+    "observation_spaces": "state and sensor. On the CARLA backend the state document is the full object-centric scene the harness's 'state' space defines -- ego speed, ego-frame object tokens, a 20-point ego-frame route, the posted speed limit, and a BEV semantic raster produced by the policy repository's own renderer (scenario_orchestration/bev.py) -- alongside this repository's own car-following view (pose, world-frame route, closest leader). A policy that declares its own rig through sensors() additionally receives that rig's camera, LiDAR and radar measurements for the same tick. The rig is the policy's, never this repository's: a sensorimotor model is trained behind one set of intrinsics and mountings, and a rig chosen here would publish this repository's behaviour under the model's name. On the local backends there is no CARLA world to describe, so only the car-following view is sent, an object-centric policy refuses the observation itself rather than being handed a substituted one, and a sensor policy is refused before the run starts.",
     "stop_sign": "Not a family this harness defines. Declared because the repository implements it and its intended outcome is the absence of a collision, which makes it the one family here whose success does not depend on a conflict developing on schedule.",
     "scenario_parameters": "implementation.parameters.town is advisory. Each .osc hard-codes the stage geometry of one map (keep(it.map_file == ...)), so on the CARLA backend the town comes from the scenario and a differing request parameter is recorded, not applied. On the local backend a request town is applied only when it names one of the bundled road networks (grid, highway, loop, two_lane, wide_grid).",
     "seed": "The pipeline exposes no seed. The local simulator is deterministic (fixed step, no substepping), so repeats of one cell are bit-identical and the seed carries no information; on CARLA the variation comes from physics substepping, which no seed here controls. The requested seed is recorded with every result.",
-    "trace": "No per-step trace is emitted. The run summary written by osc2carla/backend/metrics.py is copied into the output directory as osc2carla_metrics.json and referenced from method_metrics; under an external policy it carries ego_policy_detail, which records the rig that was attached, the rate it was sampled at, anything that failed to attach or dropped a frame, and whatever the policy reports about itself.",
-    "video": "OSC2CARLA_RECORD_VIDEO writes <family>.mp4 into the output directory: a chase cam, and under it -- whenever an ego policy attached a rig -- that rig's own frames beside the command the policy returned. A rig mounted wrong, pointed backwards or delivering the previous tick still produces plausible numbers and an obviously wrong video, which is what makes the panel worth the pixels."
+    "trace": "No per-step trace is emitted. The run summary written by osc2carla/backend/metrics.py is copied into the output directory as osc2carla_metrics.json and referenced from method_metrics. Under an external policy the summary carries ego_policy_detail, which records the rig that was attached, the rate it was sampled at, anything that failed to attach or dropped a frame, the decision count, and whatever the policy reports about itself.",
+    "action_spaces": "control on every backend. 'waypoints' is accepted through the 'control' block a waypoint policy's own lateral/longitudinal controllers return alongside its waypoints, so the policy's published closed-loop behaviour is reproduced rather than re-derived by a controller written here; a waypoint policy that returns no control cannot be actuated and is reported as such. 'trajectory' is not accepted.",
+    "bev": "carla_garage.birds_eye_view.chauffeurnet.ObsManager, imported from the policy repository rather than reimplemented. CARLA's layered builds report an _Opt suffix for which no raster ships; Town10HD.xodr and Town10HD_Opt.xodr are byte-identical in CARLA 0.9.16, so the policy repository carries Town10HD_Opt.h5 as a symlink and the substitution is recorded in the run report.",
+    "ego_vehicle": "The scenario chooses it, and for the six conflict families it is vehicle.tesla.model3. SimLingo's released checkpoint was trained behind the leaderboard hero vehicle.lincoln.mkz_2020 (4.89 m vs 4.79 m), so its fixed camera mount sits marginally differently relative to the body than in training. Recorded because the policy's own README calls the ego vehicle load-bearing; not corrected, because the ego model is part of the scenario, not of the runner.",
+    "traffic_lights_and_a_policy_that_sees": "Read every sensor-policy result against this. The scenarios express a signal phase as behaviour and geometry -- there is no action to set or read one, and scripted actors never yield to CARLA's own signals (see the header of scenarios/benchmark/red_light.osc). A camera policy has no such exemption: CARLA's lights run their default cycle and are in frame, so the ego stops for them. Measured on red_light and left_turn, simlingo reported 'Remain stopped due to the red traffic light' and travelled 17-73 m where the analytic arm travelled 97 m, and the phase it meets differs between runs of the same file. The conflict a scenario stages therefore may or may not develop, which is a property of the scenario vocabulary meeting a policy that perceives, not a defect in the rig.",
+    "video": "OSC2CARLA_RECORD_VIDEO writes <family>.mp4 into the output directory: a top-down view and a chase camera side by side, and beneath them -- whenever an ego policy attached a rig -- that rig's own frames beside the command the policy returned. A rig mounted wrong, pointed backwards or delivering the previous tick still produces plausible numbers and an obviously wrong video, which is what makes the band worth the pixels."
   }
 }

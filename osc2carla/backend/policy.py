@@ -53,6 +53,7 @@ import math
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
+from . import route as route_plan
 from .simapi import sim as carla
 
 
@@ -97,9 +98,6 @@ class Observation:
     #: reports one. Carried so a run can prove the images and the pose came from
     #: the same tick rather than assert it.
     frame: Optional[int] = None
-    #: The ego's current road speed limit, km/h, or None where the simulator
-    #: does not report one.
-    speed_limit_kph: Optional[float] = None
 
     def route_ego(self) -> List[List[float]]:
         """The sampled route in the EGO frame: +x forward, +y right, metres.
@@ -359,7 +357,8 @@ class ExternalEgoController:
     def __init__(self, world, carla_map, ctx, binding: str, policy: EgoPolicy,
                  params: Optional[Dict[str, float]] = None,
                  route_step: float = 2.0, route_horizon: float = 60.0,
-                 corridor: float = 2.2, decision_hz: float = 0.0):
+                 corridor: float = 2.2, turn_preference: Optional[str] = None,
+                 decision_hz: float = 0.0):
         self.world = world
         self.map = carla_map
         self.ctx = ctx
@@ -368,6 +367,9 @@ class ExternalEgoController:
         self.route_step = route_step
         self.route_horizon = route_horizon
         self.corridor = corridor
+        self.turn_preference = route_plan.normalize_preference(
+            turn_preference, default=route_plan.default_preference())
+        self.plan = None
         self.decision_hz = float(decision_hz or 0.0)
         self.ticks = 0          # simulation steps this controller was asked for
         self.decisions = 0      # times the policy was actually consulted
@@ -457,7 +459,6 @@ class ExternalEgoController:
             heading=math.radians(tf.rotation.yaw),
             route=route,
             frame=self._frame(),
-            speed_limit_kph=self._speed_limit(),
         )
         obs.leader = self._find_leader(obs)
         if sensors and self.rig is not None and self.rig.active:
@@ -465,15 +466,6 @@ class ExternalEgoController:
             # so the images and the state the policy reasons over are one tick.
             obs.sensors = self.rig.capture(obs.frame)
         return obs
-
-    def _speed_limit(self) -> Optional[float]:
-        try:
-            limit = float(self._actor.get_speed_limit())
-        except (RuntimeError, AttributeError, TypeError):
-            return None
-        # CARLA reports 0 until the vehicle has passed a speed-limit sign, and
-        # a 0 limit read as a limit would tell a planner to stop.
-        return limit if limit > 1.0 else None
 
     # -- the loop ----------------------------------------------------------
 
@@ -572,29 +564,26 @@ class ExternalEgoController:
     # -- perception --------------------------------------------------------
 
     def _sample_route(self) -> List[RoutePoint]:
-        """Path the ego would follow, sampled ahead of it.
+        """Path the ego will follow, sampled ahead of it.
 
-        Uses the same ``waypoint.next()[0]`` rule the compiled ``drive()``
-        behaviour uses, so an external policy inherits the identical route
-        through a junction.
+        A slice of the one plan walked from this ego's spawn (``backend/route.py``),
+        not a fresh walk from wherever the ego is now: re-projecting each tick
+        snaps onto whichever junction connector is nearest, which is how an ego
+        that was driving straight came to be handed a left turn, and then a
+        different one on the next tick.
         """
-        out: List[RoutePoint] = []
         if self.map is None:
-            return out
-        wp = self.map.get_waypoint(self._actor.get_location(), project_to_road=True)
-        if wp is None:
-            return out
-        s = 0.0
-        while s < self.route_horizon:
-            nxt = wp.next(self.route_step)
-            if not nxt:
-                break
-            wp = nxt[0]
-            s += self.route_step
-            t = wp.transform
-            out.append(RoutePoint(x=t.location.x, y=t.location.y,
-                                  heading=math.radians(t.rotation.yaw), s=s))
-        return out
+            return []
+        if self.plan is None:
+            self.plan = route_plan.plan_for(self.map, self._actor,
+                                            preference=self.turn_preference)
+        location = self._actor.get_location()
+        ahead = self.plan.ahead(location.x, location.y,
+                                first_m=self.route_step, step_m=self.route_step,
+                                count=max(0, int(self.route_horizon / self.route_step)))
+        return [RoutePoint(x=x, y=y, heading=heading,
+                           s=(index + 1) * self.route_step)
+                for index, (x, y, heading) in enumerate(ahead)]
 
     def _find_leader(self, obs: Observation) -> Optional[Leader]:
         """Closest vehicle whose centre lies within the ego's path corridor.

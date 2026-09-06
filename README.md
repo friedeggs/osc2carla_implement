@@ -229,6 +229,16 @@ property of the map, not of anything the scenario can request. CARLA's order
 comes from the OpenDRIVE file; here it is explicit, and `--junction-turn
 {straight,left,right}` selects it.
 
+`--junction-turn` now applies on the CARLA backend too, where it decides the
+exit when the **ego's route is planned** -- once, from its spawn
+(`osc2carla/backend/route.py`), rather than re-derived from the ego's live
+position on every tick. Which exit the scenario means is declared per scenario
+in `experiments/benchmark.json`, beside the rest of its intent. It has to be
+declared: CARLA's ordering of a junction's connectors carries no meaning, and
+on `red_light` the unordered rule handed the ego a left turn at x = -29.5, 19 m
+short of a junction it is supposed to cross straight through. NPC actuation is
+not affected -- `drive()` still recomputes its steering reference each tick.
+
 ### The benchmark scenarios, ported
 
 `scenarios/local/benchmark/` stages the same seven natural-language scenarios
@@ -481,7 +491,17 @@ Silently missing or degraded (details in [PIPELINE_WALKTHROUGH.md](PIPELINE_WALK
 - `lane(…, at: start)` is parsed and **ignored** (default spawn point)
 - `follow_path`, `follow_trajectory`, time gap / space gap / headway,
   pedestrians, traffic lights, road conditions, most `keep()` forms — all
-  claimed ✓ in the paper's Table 2
+  claimed ✓ in the paper's Table 2. Traffic lights are still absent *from the
+  dialect* — no action sets or reads a phase, and scripted actors never yield to
+  one — but the phase the ego meets is no longer left to chance: a scenario
+  declares it as `ego_light` in `experiments/benchmark*.json` and the runner sets
+  and freezes that junction before the episode starts
+  (`--ego-light`, `osc2carla/backend/signals.py`). That covers the three
+  junction families, whose conflicts are *about* the phase — `red_light` crosses
+  on green while the violator takes the crossing red, `left_turn` is unprotected
+  against oncoming traffic on the same green, `right_turn` is a right turn on
+  red. It is not a substitute for a phase in the language: nothing changes state
+  mid-episode, and no actor other than the ego reads a signal
 - unmapped actions compile to a silent `Success` leaf named `Unmapped[…]`
 - `hello_world.osc` therefore **compiles** but does not run as in the paper on this cluster (no Town06; no lane spawn)
 

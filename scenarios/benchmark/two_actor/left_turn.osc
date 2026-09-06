@@ -1,5 +1,37 @@
 import "domain.osc"
 
+# =============================================================================
+# EXPERIMENT 006 TWO-ACTOR VARIANT.  Not the benchmark file -- see
+# ../left_turn.osc for that one, which experiments 001-005 report and which
+# this file must not be confused with.
+#
+# What differs, and only this:
+#
+#   1. THE CAST IS CUT TO 2 VEHICLES (ego, oncoming).
+#      `lead_turner` and `oncoming_b` are dropped. `oncoming_b` was placed
+#      relative to `oncoming`, so its removal takes its dependency with it.
+#      `lead_turner` is the consequential one: the authored header says it 'is
+#      what makes the ego's turn read as a misjudged gap rather than an
+#      impossible one', so without it the ego has no exemplar to follow through
+#      the gap. That is a real change to what the family shows, it is expected
+#      to move this family's numbers, and it is why no measurement from
+#      experiment 004 or 005 is carried into this variant.
+#
+#   2. THREE DECLARED TRIGGERS, on the pattern "a spawn point, a speed and a
+#      gap": `oncoming_spawn`, `v_oncoming`, `release_gap`.
+#      They are `var` declarations, so `OSC2CARLA_SCENARIO_VARS` rewrites them
+#      and the materialized .osc in each run directory is exactly what ran
+#      (run.py :: materialize_scenario).  Experiment 006 calibrates two values
+#      for each -- a high and a low -- in a sequential preprocessing phase, then
+#      grid-searches the 2x2x2 corners.  experiments/006-grid/triggers.py owns
+#      the values and `--why` prints their derivation.
+#
+# Nothing else moves: same map, same junction or road, same conflict geometry,
+# same speeds where they are not triggers, same monitors, same termination
+# guard.  A difference in the results against the benchmark file is the cast
+# and the triggers, and is not a second implementation of the family.
+# =============================================================================
+
 # Unprotected left turn across oncoming traffic (Town05, junction 2328).
 #
 # Natural-language scenario:
@@ -13,9 +45,9 @@ import "domain.osc"
 # Stage geometry (junction 2328, centre (29.7, 197.0), box x in [15.1, 44.3],
 # y in [177.4, 216.7]).  CARLA's y axis points south, so smaller y is north:
 #
-#      ego, lead_turner        --->  y = 201.6 eastbound, road 37 lane -1
+#      ego                     --->  y = 201.6 eastbound, road 37 lane -1
 #      ==============================[ (29.7, 197.0) ]=========================
-#      oncoming, oncoming_b        <---  y = 195.0 westbound, road 38 lane +2
+#      oncoming                    <---  y = 195.0 westbound, road 38 lane +2
 #                                    |
 #                                    v  the ego's left-turn arc exits north on
 #                                       x = 31.6, road 2084 lane -1
@@ -34,8 +66,8 @@ import "domain.osc"
 # connects the left turn only from the INNERMOST one, exactly as on a real
 # road, which is what lets one scenario mix manoeuvres:
 #
-#   * ego, lead_turner            -> eastbound lane -1 (inner)  -> turn left
-#   * oncoming, oncoming_b        -> westbound lane +2 (middle) -> straight
+#   * ego                         -> eastbound lane -1 (inner)  -> turn left
+#   * oncoming                    -> westbound lane +2 (middle) -> straight
 #
 # The turn is therefore selected by choosing the approach lane, and the
 # oncoming vehicles keep their lane through the box because theirs has no left
@@ -65,22 +97,20 @@ import "domain.osc"
 # vehicle that does not change what it is doing is a vehicle that does not give
 # way, which is the entire content of an unprotected-left conflict.
 #
-# Actors (4 vehicles + 1 reference marker):
+# Actors (2 vehicles + 1 reference marker):
 #   ego         Tesla Model 3 (camera vehicle), turning left.
 #   oncoming    Dodge Charger travelling the opposite direction on y = 195.0;
-#               has priority and does not yield.
-#   oncoming_b  Seat Leon, 12 m behind it in the same lane.
-#   lead_turner Audi A2, 22 m ahead of the ego; takes the same left turn while
-#               the gap is still open and clears before oncoming arrives.  It
-#               is what makes the ego's turn read as a misjudged gap rather
-#               than an impossible one.
+#               has priority and does not yield.  Its start station is
+#               `oncoming_spawn` metres east of the conflict point.
 #
 # Timeline, as measured on CARLA 0.9.16:
-#   t = 0        all four vehicles spawn at rest, launch on @go_signal. The
+#   t = 0        both vehicles spawn at rest, launch on @go_signal. The
 #                oncoming vehicle waits: it is released by the ego's own
 #                approach, not by the clock (see `release_gap`).
-#   t ~ 0-5.7    ego cruises eastbound at 30 kph; lead_turner turns left ahead
-#                of it and clears the conflict point while the gap is open.
+#   t ~ 0-5.7    ego cruises eastbound at 30 kph on a now-empty lane.  The
+#                timings here are the AUTHORED file's, measured with a lead
+#                turner ahead of the ego; with it gone, treat them as the
+#                shape of the episode rather than as its clock.
 #   t ~ 5.7      ego is inside commit_radius of the conflict point; the monitor
 #                emits EGO_TURNING and the ego drops to v_turn for the arc.
 #                oncoming is ~19 m short of the conflict point.
@@ -88,7 +118,7 @@ import "domain.osc"
 #                point, when oncoming -- which has priority and never slows --
 #                arrives.  Impact is front-quarter, inside the junction
 #                (peak impulse ~5040, 21 collision events).
-#   t ~ 8.65-20  wreck settles; oncoming_b arrives behind.
+#   t ~ 8.65-20  wreck settles.
 #   t = 20       termination guard.
 #
 # No follower, and why.  This file used to place a Mercedes coupe 20 m behind
@@ -131,8 +161,10 @@ import "domain.osc"
 #     vehicle to full throttle regardless of its declared speed; without it
 #     the declared speed is the actual speed, and it has to be high enough to
 #     reach the conflict point while the ego is still mid-arc.  Above ~30 kph
-#     it arrives early enough to catch oncoming_b in the wreck as well, which
-#     costs the run its single intended partner.
+#     it arrived early enough to catch oncoming_b in the wreck as well, which
+#     cost the run its single intended partner.  oncoming_b is gone from this
+#     variant, so that ceiling on v_oncoming is gone with it -- which is why
+#     this variant can search v_oncoming over 18-42 kph.
 #   * follow_gap is 20 m and v_follower 22 kph, up from 14 m and 26 kph.  The
 #     ego slows to v_turn for the corner and drive() has no car-following
 #     model, so a closer or faster follower rear-ends the ego before the
@@ -143,28 +175,17 @@ scenario left_turn:
 
     env: environment
 
-    # Declared first: lead_turner is placed topologically relative to the ego,
-    # and the initializer resolves relative placement against the spawn
-    # transform of an already-spawned binding.
+    # Declared first, matching the other benchmark scenarios: the camera
+    # vehicle.  Nothing is placed relative to it in this variant.
     ego: vehicle with:
         keep(it.name == "ego")
         keep(it.model == "vehicle.tesla.model3")
-
-    lead_turner: vehicle with:
-        keep(it.name == "lead_turner")
-        keep(it.model == "vehicle.audi.a2")
-        keep(it.color == "20,20,20")
 
     # --- Oncoming carriageway ---
     oncoming: vehicle with:
         keep(it.name == "oncoming")
         keep(it.model == "vehicle.dodge.charger_2020")
         keep(it.color == "160,20,20")
-
-    oncoming_b: vehicle with:
-        keep(it.name == "oncoming_b")
-        keep(it.model == "vehicle.seat.leon")
-        keep(it.color == "0,90,160")
 
     # Where the ego's turn arc crosses the oncoming lane.  As in red_light.osc,
     # static.prop.dirtdebris01 is the flattest ground decal available; it is
@@ -179,20 +200,29 @@ scenario left_turn:
     # Cornering speed: the controller has no lateral limit, so the turn
     # slow-down is commanded explicitly.
     var v_turn: speed = 18kph
-    var v_lead: speed = 30kph
-    # Tuned so oncoming is still ~19 m short of the conflict point when the ego
-    # commits, and reaches it while the ego is mid-arc rather than after the
-    # ego has cleared or before it has started turning.
+    # EXPERIMENT 006 TRIGGER (the "speed" limb).  The nominal is tuned so
+    # oncoming is still ~19 m short of the conflict point when the ego commits,
+    # and reaches it while the ego is mid-arc rather than after the ego has
+    # cleared or before it has started turning.
     var v_oncoming: speed = 26kph
 
     # --- Distances ---
-    var lead_gap: length = 22m
-    var oncoming_gap: length = 12m
+    # The conflict point's own x, so the oncoming car's start station can be
+    # written as a distance from it rather than as a bare coordinate.
+    var conflict_x: length = 27.12m
+    # EXPERIMENT 006 TRIGGER (the "spawn point" limb): the oncoming car's start
+    # distance EAST of the conflict point (27.12, 194.70) along its own
+    # straight westbound lane.  57.08 m reproduces the authored x = 84.20,
+    # since 27.12 + 57.08 = 84.20, and matches the header's "57 m".  The lane
+    # is straight and axis-aligned in x over the whole ladder, so this is an
+    # exact station and not a linearization.  Larger means the car starts
+    # further out and arrives later.
+    var oncoming_spawn: length = 57.08m
 
     # The ego commits to the turn this far from the conflict point (the arc
     # starts at the junction mouth, ~14 m short of the oncoming lane).
     var commit_radius: length = 14m
-    # --- Trigger timing (the swept parameter) ---
+    # EXPERIMENT 006 TRIGGER (the "gap" limb).
     # The ego's remaining distance to the conflict point when the oncoming
     # vehicle is released. Larger means it goes earlier relative to the ego.
     # The ego spawns ~53 m out, so the default fires on the first tick.
@@ -224,23 +254,11 @@ scenario left_turn:
                     speed(v_turn)
                 wait elapsed(15s)
 
-        # ---- LEAD_TURNER: same turn, taken while the gap is still open ----
-        serial:
-            lead_turner.assign_position() with:
-                position(distance: lead_gap, ahead_of: ego, at: start)
-                speed(0kph, at: start)
-
-            wait @go_signal
-
-            one_of:
-                lead_turner.drive() with:
-                    speed(v_lead)
-                wait elapsed(19s)
-
         # ---- ONCOMING: has priority, does not yield ----
         serial:
+            # `oncoming_spawn` east of the conflict point, along its own lane.
             oncoming.assign_position() with:
-                position(x: 84.20, y: 194.99, z: 0.00, h: 3.1466rad, at: start)
+                position(x: conflict_x + oncoming_spawn, y: 194.99, z: 0.00, h: 3.1466rad, at: start)
                 speed(0kph, at: start)
 
             wait @go_signal
@@ -267,18 +285,6 @@ scenario left_turn:
                     speed(v_oncoming)
                     keep_lane()
                 wait elapsed(13s)
-
-        serial:
-            oncoming_b.assign_position() with:
-                position(distance: oncoming_gap, behind: oncoming, at: start)
-                speed(0kph, at: start)
-
-            wait @go_signal
-
-            one_of:
-                oncoming_b.drive() with:
-                    speed(v_oncoming)
-                wait elapsed(19s)
 
         # ---- Monitor: has the ego committed to crossing the oncoming lane? ----
         serial:

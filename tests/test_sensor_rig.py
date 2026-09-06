@@ -286,24 +286,17 @@ ok("route_ego() puts +x forward and +y right, in CARLA's handedness")
 
 import osc2carla_policy_bridge as bridge
 
-straight = [[float(s), 0.0] for s in range(2, 62, 2)]     # 2 m spacing, as sampled
-resampled = bridge._resample(straight)
-assert len(resampled) == bridge.ROUTE_POINTS, len(resampled)
-assert abs(resampled[0][0] - 2.5) < 1e-6, resampled[0]
-assert abs(resampled[7][0] - 9.5) < 1e-6, resampled[7]
-assert abs(resampled[-1][0] - 21.5) < 1e-6, resampled[-1]
-ok("the route is resampled onto the 1 m grid the reference agents index")
-
-short = bridge._resample([[2.0, 0.0], [4.0, 0.0]])
-assert len(short) == 2 and abs(short[0][0] - 2.5) < 1e-6, short
-ok("a route that runs out is returned short, never padded with invented points")
-
-# The two installed adapters return a nested control block beside their
-# waypoints; the older flat form and a bare acceleration still work.
+# Both installed sensorimotor adapters declare `control` and return a nested
+# control block beside their waypoints, so the block has to be read for either
+# declared action space -- reading it only for `waypoints` rejected them as
+# carrying no control at all.
 cmd = bridge._to_command({"control": {"throttle": 0.4, "steer": -0.2, "brake": 0.0},
                           "waypoints": [[1, 2]], "meta": {"policy": "x"}})
 assert (cmd.throttle, cmd.steer, cmd.brake) == (0.4, -0.2, 0.0), cmd
-ok("a nested 'control' block is read (this is what tfv6 and simlingo return)")
+cmd = bridge._to_command({"control": {"throttle": 0.4, "steer": -0.2, "brake": 0.0}},
+                         action_space="waypoints")
+assert cmd.throttle == 0.4, cmd
+ok("a nested 'control' block is read whichever action space is declared")
 
 cmd = bridge._to_command({"throttle": 1.0, "steer": 0.0, "brake": 0.0})
 assert cmd.throttle == 1.0
@@ -311,21 +304,30 @@ cmd = bridge._to_command({"acceleration_mps2": -5.0})
 assert cmd.brake == 1.0 and cmd.throttle == 0.0, cmd
 ok("the flat form and a bare acceleration are still accepted")
 
+try:
+    bridge._to_command({"waypoints": [[1, 2]]}, action_space="waypoints")
+except bridge.PolicyBridgeError as exc:
+    assert "no 'control' block" in str(exc), exc
+else:
+    raise AssertionError("a waypoint policy with no control must be refused")
+ok("a waypoint policy that returns no control is refused, not given a follower")
+
 payload = bridge._observation_payload(
     Observation(t=1.5, speed=7.0, x=0.0, y=0.0, heading=0.0,
                 route=[RoutePoint(float(s), 0.0, 0.0, float(s))
                        for s in range(2, 62, 2)],
                 leader=Leader(gap=12.0, speed=6.0, actor_id=3, type_id="vehicle.a"),
                 sensors={"rgb_front": np.zeros((4, 4, 3), np.uint8)},
-                frame=42, speed_limit_kph=50.0))
-assert payload["ego"]["speed_mps"] == 7.0
-assert payload["speed_mps"] == 7.0            # the flat keys, still there
+                frame=42))
+assert payload["speed_mps"] == 7.0
 assert payload["sensor"]["cameras"]["rgb_front"].shape == (4, 4, 3)
 assert payload["sensor"]["frame"] == 42
-assert payload["speed_limit_kph"] == 50.0
-assert len(payload["route"]) == bridge.ROUTE_POINTS
 assert payload["leader"]["gap_m"] == 12.0
-ok("the observation payload carries ego, route, leader and every sensor by name")
+# `route` is the harness contract's ego-frame list and belongs to the
+# object-centric builder; this repository's own world-frame samples keep their
+# own key rather than colliding with it.
+assert "route" not in payload and len(payload["route_world"]) == 30
+ok("the observation payload carries the car-following view and every sensor")
 
 state_only = bridge._observation_payload(
     Observation(t=0.0, speed=0.0, x=0.0, y=0.0, heading=0.0))
@@ -408,7 +410,6 @@ controller.tick(0.0)
 assert len(policy.seen) == 1
 assert policy.seen[0].sensors["rgb_front"].shape == (512, 1024, 3)
 assert policy.seen[0].frame == 101
-assert policy.seen[0].speed_limit_kph == 50.0
 ok("the observation carries this tick's frames, stamped with this tick")
 
 # 2 Hz against 0.1 s steps: decide, hold four, decide again.

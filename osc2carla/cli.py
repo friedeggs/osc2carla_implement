@@ -95,23 +95,23 @@ def _running_leaves(node, out=None):
     return out
 
 
-def _vision_band_height(rig, width: int, cap: int = 420) -> int:
-    """Rows to give the vision band so the rig's strip spans the frame width.
+def _vision_strip_aspect(rig) -> float:
+    """Width-to-height ratio of the rig's stitched camera strip.
 
-    Derived from the DECLARED cameras rather than from a captured panel, because
-    the band's height has to be fixed before the first frame -- every frame in
-    an MP4 is the same size -- and the first frame may be one where the rig
-    delivered nothing.
+    Read off the DECLARED cameras rather than off a captured panel, because the
+    recorder has to fix the band's height before the first frame -- every frame
+    in an MP4 is the same size -- and the first frame may be one where the rig
+    delivered nothing. 0 means "no cameras", and the caller draws no band.
     """
     from .backend.sensors import CameraSpec
     cameras = [s for s in rig.specs if isinstance(s, CameraSpec)]
     if not cameras:
-        return 0
+        return 0.0
     strip_w = sum(int(c.width) for c in cameras)
     strip_h = max(int(c.height) for c in cameras)
     if strip_w <= 0 or strip_h <= 0:
-        return 0
-    return max(120, min(cap, int(round(width * strip_h / float(strip_w)))))
+        return 0.0
+    return strip_w / float(strip_h)
 
 
 def _vision_hook(controller, mode: str):
@@ -198,9 +198,26 @@ def main(argv: Optional[List[str]] = None) -> int:
                         help="Print the local backend's road networks and exit.")
     parser.add_argument("--junction-turn", default="straight",
                         choices=("straight", "left", "right"),
-                        help="Local backend only: which manoeuvre drive() "
-                             "takes at a junction, since it follows "
-                             "next()[0] (default: straight).")
+                        help="Which manoeuvre the ego's route takes where a "
+                             "lane branches, since a route is walked with "
+                             "next()[0] and CARLA's own ordering of the "
+                             "branches means nothing (default: straight). On "
+                             "the local backend it orders the map's own "
+                             "successors; on CARLA it chooses the exit when "
+                             "the ego's route is planned. A property of the "
+                             "scenario -- the harness sets it per scenario "
+                             "from the benchmark's declared intent.")
+    parser.add_argument("--ego-light", default=None,
+                        choices=("green", "yellow", "red"),
+                        help="The signal phase the ego meets at its junction, "
+                             "set at spawn and frozen for the episode. This "
+                             "dialect has no action that sets a signal phase, "
+                             "so left unset the phase is whatever the "
+                             "simulator's own cycle happened to be showing -- "
+                             "and on the junction families it decides the run. "
+                             "A property of the scenario: the harness sets it "
+                             "per scenario from the benchmark's declared "
+                             "intent.")
     parser.add_argument("--render-mode", default="auto",
                         choices=("auto", "window", "headless", "off"),
                         help="Local backend only: 'window' opens a pygame "
@@ -268,6 +285,14 @@ def main(argv: Optional[List[str]] = None) -> int:
                         help="Draw what the ego policy's sensor rig saw under "
                              "the chase cam in --record-video. 'auto' (default) "
                              "draws it whenever a rig is attached.")
+    parser.add_argument("--trace-out", default=None,
+                        help="Directory to write a per-tick canonical trace "
+                             "(states.jsonl + scene.json) for the harness's "
+                             "metrics package. Needs metrics/recording to be "
+                             "findable above this repository.")
+    parser.add_argument("--trace-rate-hz", type=float, default=10.0,
+                        help="Sampling rate of --trace-out (default 10 Hz; the "
+                             "physics rate is --fixed-dt).")
     parser.add_argument("--metrics-out", default=None,
                         help="Write a JSON run summary (collision occurrence, "
                              "impulses, motion stats) to this path.")
@@ -306,6 +331,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     from .backend import BehaviorTreeBuilder, ExecutionContext, Recorder, ScenarioInitializer
     from .backend import simapi
     from .backend.metrics import MetricsCollector
+    from .backend.trace import SceneTracer, make_recorder
     from .backend.policy import (ExternalEgoController, parse_policy_params,
                                  resolve_policy)
 
@@ -327,6 +353,13 @@ def main(argv: Optional[List[str]] = None) -> int:
             if b.type_name == "vehicle":
                 return b.name
         return None
+
+    # Set before any route is planned. A bridged policy's observation builder is
+    # reached through a class name and can be given no argument of its own, so
+    # the preference the scenario declared travels this way rather than through
+    # every constructor between here and there.
+    from .backend import route as route_plan
+    route_plan.set_default_preference(args.junction_turn)
 
     ego_binding = _default_ego_binding() if args.ego_policy else None
     external_actors = {ego_binding} if ego_binding else set()
@@ -372,6 +405,21 @@ def main(argv: Optional[List[str]] = None) -> int:
     if not args.no_sync:
         world.tick()
 
+    # The ego's junction phase, before the first policy decision is taken.
+    signal_note = {"requested": None}
+    if not local:
+        from .backend import signals
+        signal_actor = ctx.actor(ego_binding) if ego_binding else None
+        if signal_actor is None:
+            signal_actor = ctx.actor(_default_ego_binding() or "")
+        signal_note = signals.apply(world, carla_map, signal_actor,
+                                    args.ego_light)
+        if signal_note.get("requested"):
+            print("[osc2carla] ego signal: %s" % signal_note.get("note"),
+                  file=sys.stderr)
+        if not args.no_sync:
+            world.tick()
+
     rec_binding = args.record_actor
     if rec_binding is None:
         for b in annotated.scenario.actors:
@@ -389,6 +437,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         policy_cls = resolve_policy(args.ego_policy)
         controller = ExternalEgoController(world, carla_map, ctx, ego_binding,
                                            policy_cls(), params=policy_params,
+                                           turn_preference=args.junction_turn,
                                            decision_hz=args.policy_hz)
         unknown = getattr(controller.policy, "_unknown", None)
         if unknown:
@@ -424,15 +473,16 @@ def main(argv: Optional[List[str]] = None) -> int:
                   "--render-mode off ignores it", file=sys.stderr)
     elif args.record_video and rec_actor is not None:
         panel = _vision_hook(controller, args.vision_panel)
+        # A rig with range sensors but no cameras has nothing to draw, and an
+        # empty band under every frame is noise rather than a check.
+        aspect = _vision_strip_aspect(controller.rig) if panel else 0.0
+        if not aspect:
+            panel = None
         recorder = Recorder(world, rec_actor, args.record_video,
                             width=args.record_width,
                             height=args.record_height,
                             fps=args.record_fps,
-                            vision=panel,
-                            vision_height=(
-                                _vision_band_height(controller.rig,
-                                                    args.record_width)
-                                if panel else 0))
+                            vision=panel, vision_aspect=aspect)
         print(f"[osc2carla] recording {rec_binding!r} -> {args.record_video}"
               + (" (with the policy's own camera rig)" if panel else ""),
               file=sys.stderr)
@@ -456,6 +506,20 @@ def main(argv: Optional[List[str]] = None) -> int:
         if recorder is not None:
             metrics.use_external_collisions(recorder._collisions)
 
+    tracer = None
+    if args.trace_out:
+        trace_rec, note = make_recorder(
+            args.trace_out, rate_hz=args.trace_rate_hz,
+            context={"method": "osc2runner", "backend": args.backend,
+                     "scenario": annotated.scenario.name, "town": map_name,
+                     "ego_binding": ego_binding, "fixed_dt": args.fixed_dt,
+                     "ego_policy": args.ego_policy,
+                     "ego_signal": signal_note})
+        if note:
+            print("[osc2carla] trace: %s" % note, file=sys.stderr)
+        tracer = SceneTracer(trace_rec, ctx, carla_map, ego_binding=ego_binding)
+        tracer.declare_scene()
+
     ctx.blackboard["go_signal"] = True
 
     sim_cap = args.sim_duration
@@ -474,8 +538,8 @@ def main(argv: Optional[List[str]] = None) -> int:
                        ego_policy=args.ego_policy,
                        ego_binding=ego_binding,
                        bindings=_binding_labels(annotated, ctx),
-                       note="drive() takes the "
-                            f"{args.junction_turn} exit at junctions")
+                       note=f"routes take the {args.junction_turn} exit at "
+                            "junctions")
 
     start = time.time()
     sim_t = 0.0
@@ -517,6 +581,8 @@ def main(argv: Optional[List[str]] = None) -> int:
                 recorder.tick(sim_t)
             if metrics is not None:
                 metrics.tick(sim_t, leader_gap=leader_gap)
+            if tracer is not None:
+                tracer.tick(sim_t)
             if sim_cap and sim_cap > 0 and sim_t >= sim_cap:
                 print(f"[osc2carla] reached scenario duration {sim_cap:.1f}s",
                       file=sys.stderr)
@@ -544,6 +610,15 @@ def main(argv: Optional[List[str]] = None) -> int:
             print(f"[osc2carla] metrics -> {args.metrics_out} "
                   f"(collision_occurred={summary['collision_occurred']}, "
                   f"events={summary['n_collision_events']})", file=sys.stderr)
+        if tracer is not None:
+            # After metrics.write, so the collision list the trace records is
+            # the same one osc2carla_metrics.json reports, and before the
+            # actors are destroyed.
+            tracer.note_collisions(metrics.collisions if metrics is not None
+                                   else [], ego_binding)
+            out = tracer.close()
+            if out:
+                print("[osc2carla] trace -> %s" % out, file=sys.stderr)
         if controller is not None:
             controller.teardown()
         if recorder is not None:

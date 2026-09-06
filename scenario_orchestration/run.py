@@ -57,7 +57,8 @@ request parameter, because it describes the machine rather than the experiment:
     OSC2CARLA_RUN_TIMEOUT_S      wall-clock budget for the child process
     OSC2CARLA_RECORD_VIDEO       1 to write <family>.mp4 into the output dir
     OSC2CARLA_VISION_PANEL       auto (default) | on | off -- draw the ego
-                                 policy's own camera frames under the chase cam
+                                 policy's own camera frames beneath the top and
+                                 chase views
     OSC2CARLA_POLICY_HZ          ego-policy decision rate; 0/unset decides on
                                  every simulated tick
     OSC2CARLA_POLICY_WORKDIR     working directory for the run; a vision policy
@@ -98,6 +99,8 @@ REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 METHOD_RESULT_FILE = "method_result.json"
 METRICS_FILE = "osc2carla_metrics.json"
+#: What the policy bridge writes about the observation it actually served.
+POLICY_NOTES_FILE = "policy_bridge.json"
 LOG_FILE = "osc2carla.log"
 
 #: Backend -> where its scenarios and their declared intent live.
@@ -333,6 +336,130 @@ def scenario_map_file(path: str) -> Optional[str]:
     return match.group(1) if match else None
 
 
+#: Matches one `var <name>: <type> = <value>` declaration in an .osc, keeping
+#: the value and any unit suffix separate so an override can reuse the unit the
+#: file already declared.
+_VAR_DECL = re.compile(
+    r"^(?P<indent>[ \t]*)var[ \t]+(?P<name>\w+)[ \t]*:[ \t]*(?P<type>\w+)"
+    r"[ \t]*=[ \t]*(?P<value>[^\n#]*?)[ \t]*(?P<comment>#.*)?$",
+    re.M)
+
+#: Units a bare numeric override inherits from the declaration it replaces, so
+#: `release_gap=16` means 16 m in a file that wrote `16m` and not 16 of whatever
+#: the compiler defaults to. Anything else has to be written out in full.
+_UNIT_OF = re.compile(r"^-?\d+(?:\.\d+)?(?P<unit>[A-Za-z/]*)$")
+
+
+def scenario_variables(path: str) -> Dict[str, str]:
+    """`{name: declared value}` for every `var` in an .osc, as written."""
+    try:
+        with open(path) as fh:
+            text = fh.read()
+    except OSError:
+        return {}
+    return {m.group("name"): m.group("value").strip()
+            for m in _VAR_DECL.finditer(text)}
+
+
+def requested_variables(parameters: Dict[str, Any]) -> Dict[str, str]:
+    """Scenario-variable overrides for this run, from the request or the node.
+
+    Two sources, environment last so a sweep can turn one knob without editing
+    a config:
+
+        implementation.parameters.scenario_vars: {release_gap: 16.0}
+        OSC2CARLA_SCENARIO_VARS="release_gap=16,cut_in_lead=9"
+
+    This is how a *scripted* scenario's trigger timing becomes a swept
+    parameter. The orchestration method is asked for a time-to-conflict and
+    retimes its actors to deliver it; an .osc cannot be asked for anything, so
+    the comparable knob is the declared trigger distance, and the comparable
+    procedure is a grid search over it (experiment 004). Rewriting the
+    declaration rather than adding a command-line flag keeps the whole scenario
+    in one auditable artifact: the materialized .osc is written into the run
+    directory and is exactly what was executed.
+    """
+    out: Dict[str, str] = {}
+    declared = parameters.get("scenario_vars")
+    if isinstance(declared, dict):
+        for name, value in declared.items():
+            out[str(name)] = str(value)
+    raw = _env("OSC2CARLA_SCENARIO_VARS")
+    if raw:
+        for item in raw.replace(";", ",").split(","):
+            item = item.strip()
+            if not item:
+                continue
+            if "=" not in item:
+                raise RequestError(
+                    "OSC2CARLA_SCENARIO_VARS entry %r is not name=value" % item)
+            name, value = item.split("=", 1)
+            out[name.strip()] = value.strip()
+    return out
+
+
+def materialize_scenario(scenario_path: str, overrides: Dict[str, str],
+                         output_dir: str) -> Tuple[str, Dict[str, Any]]:
+    """`(path executed, note)`. Rewrites `var` declarations, or passes through.
+
+    A bare numeric override inherits the unit of the declaration it replaces --
+    `release_gap=16` against `var release_gap: length = 70m` becomes `16m` --
+    because a length that silently loses its unit is a different scenario, not a
+    smaller number. An override naming a variable the file does not declare is
+    refused rather than ignored: a grid search whose knob is not connected to
+    anything produces a flat curve and looks like a finding.
+    """
+    if not overrides:
+        return scenario_path, {}
+    with open(scenario_path) as fh:
+        text = fh.read()
+    declared = scenario_variables(scenario_path)
+    unknown = sorted(set(overrides) - set(declared))
+    if unknown:
+        raise RequestError(
+            "scenario_vars names %s, which %s does not declare; it declares %s"
+            % (", ".join(unknown), os.path.basename(scenario_path),
+               ", ".join(sorted(declared)) or "no variables"))
+
+    applied: Dict[str, str] = {}
+
+    def _rewrite(match: "re.Match") -> str:
+        name = match.group("name")
+        if name not in overrides:
+            return match.group(0)
+        value = overrides[name]
+        unit_match = _UNIT_OF.match(value)
+        if unit_match is not None and not unit_match.group("unit"):
+            old_unit = _UNIT_OF.match(declared[name])
+            if old_unit is not None and old_unit.group("unit"):
+                value = value + old_unit.group("unit")
+        applied[name] = value
+        comment = match.group("comment")
+        return "%svar %s: %s = %s%s" % (
+            match.group("indent"), name, match.group("type"), value,
+            ("  " + comment) if comment else "")
+
+    rewritten = _VAR_DECL.sub(_rewrite, text)
+    stem = os.path.splitext(os.path.basename(scenario_path))[0]
+    out_path = os.path.join(output_dir, stem + ".osc")
+    header = (
+        "# Materialized by scenario_orchestration/run.py from\n"
+        "#   %s\n"
+        "# with scenario_vars %s.\n"
+        "# This file is what was executed; the source above is unmodified.\n"
+        % (os.path.relpath(scenario_path, REPO_ROOT),
+           ", ".join("%s=%s" % kv for kv in sorted(applied.items())) or "none"))
+    with open(out_path, "w") as fh:
+        fh.write(header + rewritten)
+    # The .osc `import "domain.osc"` is resolved against the file's own
+    # directory, and the run directory is not that directory, so the stdlib has
+    # to be reachable from where the copy lands.
+    note = {"scenario_vars_applied": dict(applied),
+            "scenario_vars_declared_defaults": {k: declared[k] for k in applied},
+            "scenario_file_executed": out_path}
+    return out_path, note
+
+
 def resolve_town(backend: str, intent: Dict[str, Any], parameters: Dict[str, Any],
                  osc_map: Optional[str]) -> Tuple[Optional[str], Optional[str]]:
     """``(--town value, note)``.
@@ -356,6 +483,53 @@ def resolve_town(backend: str, intent: Dict[str, Any], parameters: Dict[str, Any
     return default, ("requested town %r is not a local road network; using %r, "
                      "which is what this scenario's coordinates were written "
                      "against" % (requested, default))
+
+
+#: Which exit a route takes where a lane branches. "straight" for a scenario
+#: that declares nothing, which is what every non-junction family wants.
+JUNCTION_TURNS = ("straight", "left", "right")
+
+
+def resolve_junction_turn(intent: Dict[str, Any]) -> str:
+    """The scenario's declared junction manoeuvre, overridable per run.
+
+    Declared in ``experiments/benchmark*.json`` beside the rest of a scenario's
+    intent, because which way the ego goes through the junction *is* part of what
+    the scenario is: red_light crosses straight, right_turn turns right,
+    left_turn turns left. ``$OSC2CARLA_JUNCTION_TURN`` overrides it for a run
+    that means to sweep it, the same way every other node fact travels.
+    """
+    value = (_env("OSC2CARLA_JUNCTION_TURN") or "").strip().lower()
+    if value not in JUNCTION_TURNS:
+        value = str(intent.get("junction_turn") or "").strip().lower()
+    return value if value in JUNCTION_TURNS else "straight"
+
+
+#: Signal phases a scenario may declare for the ego. Absent means the scenario
+#: is not about a phase -- an unsignalised junction, or no junction at all -- and
+#: nothing is set.
+EGO_LIGHTS = ("green", "yellow", "red")
+
+
+def resolve_ego_light(intent: Dict[str, Any]) -> Optional[str]:
+    """The phase the ego's own signal is held at, or ``None``.
+
+    Declared per scenario in ``experiments/benchmark*.json``, because on the
+    junction families it is part of what the scenario *is*: red_light crosses on
+    green while another vehicle takes its red, left_turn is unprotected against
+    oncoming traffic holding the same green, and right_turn is a right turn on
+    red. The dialect has no action for a signal phase, so unset it is whatever
+    the simulator's cycle was showing -- which decides whether a light-obeying
+    policy ever reaches the conflict. ``$OSC2CARLA_EGO_LIGHT`` overrides it for
+    one run; ``none`` there turns it off.
+    """
+    override = (_env("OSC2CARLA_EGO_LIGHT") or "").strip().lower()
+    if override in EGO_LIGHTS:
+        return override
+    if override in ("none", "off", "unset"):
+        return None
+    declared = str(intent.get("ego_light") or "").strip().lower()
+    return declared if declared in EGO_LIGHTS else None
 
 
 def resolve_duration(evaluation: Dict[str, Any], intent: Dict[str, Any],
@@ -462,14 +636,14 @@ def native_parameter_names(policy: str) -> Sequence[str]:
         return NATIVE_PARAMETERS.get(policy, ())
 
 
-#: Observation spaces this runtime can serve. ``state`` is pose, speed, the
-#: sampled route and the closest leader on it; the sensor forms add the rig the
-#: policy itself declares, and exist only on the CARLA backend.
+#: Observation spaces this runtime can serve. ``state`` is the object-centric
+#: scene plus this repository's car-following view; the sensor forms add the rig
+#: the policy itself declares, and exist only on the CARLA backend.
 OBSERVATION_SPACES = ("state", "sensor", "state+sensor")
 
 
 def build_policy_plan(policy_request: Dict[str, Any], request_path: str,
-                      backend: str = "carla"
+                      output_dir: str, backend: str = "carla"
                       ) -> Tuple[List[str], Dict[str, str], Dict[str, Any]]:
     """``(cli args, extra env, notes)`` for the requested ego policy.
 
@@ -496,7 +670,10 @@ def build_policy_plan(policy_request: Dict[str, Any], request_path: str,
         )
     if observation_space not in OBSERVATION_SPACES:
         raise RequestError(
-            "policy %r wants a %r observation space; this runtime provides %s"
+            "policy %r wants a %r observation space; this runtime provides %s. "
+            "'state' is ego pose and speed, object-centric actors, route, "
+            "signals and a BEV raster on the CARLA backend; 'sensor' adds the "
+            "rig the policy declares for itself"
             % (name or implementation, observation_space,
                " and ".join(sorted(OBSERVATION_SPACES)))
         )
@@ -510,10 +687,12 @@ def build_policy_plan(policy_request: Dict[str, Any], request_path: str,
             "(OSC2CARLA_BACKEND=carla)."
             % (name or implementation, observation_space, backend)
         )
-    if action_space != "control":
+    if action_space not in ("control", "waypoints"):
         raise RequestError(
             "policy %r emits %r; this runtime applies normalised control "
-            "(throttle, brake, steer) and has no %s follower"
+            "(throttle, brake, steer), and accepts a waypoint policy through the "
+            "control its own controllers return alongside its waypoints. There is "
+            "no %s follower here"
             % (name or implementation, action_space, action_space)
         )
 
@@ -569,7 +748,9 @@ def build_policy_plan(policy_request: Dict[str, Any], request_path: str,
          # The bridge resolves the request's relative checkpoint paths against
          # this. Found here, where the request path is known, rather than
          # rediscovered there.
-         "OSC2CARLA_POLICY_ROOT": harness_root(request_path) or ""},
+         "OSC2CARLA_POLICY_ROOT": harness_root(request_path) or "",
+         "OSC2CARLA_POLICY_NOTES": os.path.join(os.path.abspath(output_dir),
+                                                POLICY_NOTES_FILE)},
         notes,
     )
 
@@ -609,6 +790,15 @@ def build_command(scenario_path: str, backend: str, town: Optional[str],
                "--backend", "pygame" if backend == "pygame" else "carla",
                "--fixed-dt", "%r" % fixed_dt,
                "--metrics-out", os.path.join(output_dir, METRICS_FILE)]
+    if not _env_flag("OSC2CARLA_NO_TRACE"):
+        # The per-tick canonical trace the harness's metrics package evaluates.
+        # On by default and only suppressible by hand: unlike video it costs no
+        # rendering, and the harness cannot compute scenario success without
+        # it. The rate is the protocol's evaluation tick rate, not the physics
+        # rate.
+        command += ["--trace-out", output_dir,
+                    "--trace-rate-hz",
+                    _env("OSC2CARLA_TRACE_RATE_HZ") or "10"]
     if ego_binding:
         # Which binding the metrics measure, and which one an ego policy takes
         # over; osc2carla falls back to the first vehicle in the file.
@@ -620,22 +810,44 @@ def build_command(scenario_path: str, backend: str, town: Optional[str],
                     "--port", _env("OSC2CARLA_CARLA_PORT") or "2000",
                     "--carla-timeout", "300"]
     else:
-        # A whole-map preference: which exit drive() takes at a junction. The
-        # highway ports never cross one, hence the harmless default.
-        command += ["--junction-turn", str(intent.get("junction_turn") or "straight")]
         if town:
             command += ["--town", town]
     policy_hz = _env_float("OSC2CARLA_POLICY_HZ") \
         or _as_float(parameters.get("policy_hz"))
     if policy_hz and policy_hz > 0:
         command += ["--policy-hz", "%r" % policy_hz]
+    # Which exit the ego's route takes where a lane branches -- a property of the
+    # scenario, declared in this repository's benchmark config beside the rest of
+    # its intent, and now passed on BOTH backends. It used to go to the local one
+    # only, which left the CARLA arm walking next()[0] with no rule at all: on
+    # red_light that handed the ego a left turn 19 m before a junction it is
+    # supposed to cross straight through. The highway families never branch,
+    # hence the harmless default.
+    command += ["--junction-turn", resolve_junction_turn(intent)]
+    # The signal phase the ego meets, where the scenario is about one.
+    ego_light = resolve_ego_light(intent)
+    if ego_light:
+        command += ["--ego-light", ego_light]
     if _env_flag("OSC2CARLA_RECORD_VIDEO"):
         command += ["--record-video", os.path.join(output_dir, family + ".mp4"),
-                    "--record-fps", "20", "--record-width", "1280",
-                    "--record-height", "720",
-                    # 'auto' draws the ego policy's own frames whenever a rig is
-                    # attached and changes nothing for the analytic arms, which
-                    # is why it is the default rather than a flag to remember.
+                    # One frame is captured per simulation tick, so the
+                    # container's frame rate has to be the tick rate or the video
+                    # misrepresents time: at fixed_dt=0.1 the sim runs at 10 Hz,
+                    # and stamping 20 fps made an 18.1 s episode play in 9 s. For
+                    # a recording whose point is to show whether the ego braked in
+                    # time, playing at 2x is not a cosmetic problem.
+                    "--record-fps", "%g" % max(1.0, round(1.0 / fixed_dt, 3)),
+                    # Per *pane*. The recorder composites a top-down and a chase
+                    # view side by side, so the file is twice this wide -- 1440x540,
+                    # which is the geometry the orchestration method's recorder
+                    # produces. Matching it means the two methods' videos can be
+                    # put next to each other without rescaling one of them.
+                    "--record-width", "720",
+                    "--record-height", "540",
+                    # 'auto' draws the ego policy's own frames beneath the pair
+                    # whenever a rig is attached, and changes nothing for the
+                    # analytic arms -- which is why it is the default rather
+                    # than a flag to remember.
                     "--vision-panel", vision_panel_mode()]
         if backend == "pygame":
             command += ["--render-mode", "headless"]
@@ -850,7 +1062,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     try:
         backend = resolve_backend(parameters)
-        family, scenario_path = resolve_scenario(request, backend)
+        family, scenario_source = resolve_scenario(request, backend)
+        # Trigger timing and every other declared `var` is overridable, and the
+        # materialized copy goes in the run directory so what executed is on
+        # disk beside the numbers it produced.
+        scenario_path, var_note = materialize_scenario(
+            scenario_source, requested_variables(parameters), output_dir)
         intent = load_intent(backend, family)
         osc_map = scenario_map_file(scenario_path)
         ego_binding = scenario_ego_binding(scenario_path)
@@ -858,20 +1075,22 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         duration, duration_source = resolve_duration(evaluation, intent, parameters)
         fixed_dt = resolve_fixed_dt(evaluation, parameters)
         policy_args, policy_env, policy_notes = build_policy_plan(
-            policy_request, args.policy_request, backend)
+            policy_request, args.policy_request, output_dir, backend)
     except RequestError as exc:
         return write_result(output_dir, "failure", method_metrics=context,
                             reason=str(exc))
 
     context.update(policy_notes)
+    context.update(var_note)
     context.update({
         "backend": backend,
         "scenario_family_resolved": family,
-        "scenario_file": os.path.relpath(scenario_path, REPO_ROOT),
+        "scenario_file": os.path.relpath(scenario_source, REPO_ROOT),
         "scenario_map_file": osc_map,
         "ego_binding": ego_binding or "(first vehicle in the scenario)",
         "town": town or osc_map,
-        "junction_turn": intent.get("junction_turn") if backend == "pygame" else None,
+        "junction_turn": resolve_junction_turn(intent),
+        "ego_light": resolve_ego_light(intent),
         "sim_duration_requested": duration,
         "sim_duration_source": duration_source,
         "fixed_dt": fixed_dt,
@@ -937,6 +1156,16 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     near_gap = _env_float("OSC2CARLA_NEAR_COLLISION_M") or DEFAULT_NEAR_COLLISION_M
     context["near_collision_gap_m"] = near_gap
     context["metrics_path"] = METRICS_FILE
+    # What the bridge served the policy: which observation shape, which BEV
+    # raster, whether the route ran short. A BEV substitution changes what a
+    # number means, so it travels with the number.
+    notes_path = os.path.join(output_dir, POLICY_NOTES_FILE)
+    if os.path.exists(notes_path):
+        try:
+            with open(notes_path) as fh:
+                context["policy_bridge"] = json.load(fh)
+        except (OSError, ValueError) as exc:
+            context["policy_bridge"] = {"unreadable": str(exc)}
     context["log_path"] = LOG_FILE
     if not _env_flag("OSC2CARLA_RECORD_VIDEO"):
         context["video_path"] = None

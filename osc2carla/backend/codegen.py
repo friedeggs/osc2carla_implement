@@ -80,6 +80,45 @@ def emit(annotated: AnnotatedScenario, source_path: str) -> str:
 
 _FOOTER = '''
 
+#: Actor categories no CARLA map ships, and which therefore can only be left
+#: over from a previous run on this world.
+LEFTOVER_PREFIXES = ("vehicle.", "walker.", "sensor.", "static.prop.")
+
+
+def _clear_leftover_actors(world) -> int:
+    """Destroy actors a previous run left in this world. Returns the count."""
+    try:
+        actors = list(world.get_actors())
+    except (RuntimeError, AttributeError):
+        return 0
+    doomed = [a for a in actors
+              if str(getattr(a, "type_id", "")).startswith(LEFTOVER_PREFIXES)]
+    if not doomed:
+        return 0
+    # Sensors first: a sensor outlives its parent's destruction and keeps
+    # streaming into a callback that no longer has anywhere to put the data.
+    doomed.sort(key=lambda a: not str(a.type_id).startswith("sensor."))
+    cleared = 0
+    for actor in doomed:
+        try:
+            if str(actor.type_id).startswith("sensor."):
+                try:
+                    actor.stop()
+                except (RuntimeError, AttributeError):
+                    pass
+            actor.destroy()
+            cleared += 1
+        except RuntimeError:
+            pass          # already gone, which is the outcome we wanted
+    try:
+        world.tick()
+    except RuntimeError:
+        pass
+    print("[codegen] cleared %d actor(s) left over from a previous run on this "
+          "world" % cleared)
+    return cleared
+
+
 def main(argv=None):
     p = argparse.ArgumentParser()
     p.add_argument("--host", default="127.0.0.1")
@@ -105,6 +144,17 @@ def main(argv=None):
     cur_map = world.get_map().name
     if not (cur_map.endswith(map_name) or map_name.endswith(cur_map.split("/")[-1])):
         world = client.load_world(map_name)
+    else:
+        # Same town as whatever ran last, so load_world is skipped -- and with it
+        # the actor cleanup a map change gives for free. A run that died between
+        # spawning and teardown therefore leaves its whole cast standing, and the
+        # next run spawns a second cast on top of it: the ego ends up overlapping
+        # a copy of itself, pinned by physics, reporting a collision on every
+        # tick against an actor whose role_name is also 'ego'. That is a silently
+        # wrong result, not a crash, which is the dangerous kind. Nothing a map
+        # ships is a vehicle, a walker, a sensor or a spawned prop, so clearing
+        # those is safe and is what a map change would have done anyway.
+        _clear_leftover_actors(world)
     carla_map = world.get_map()
 
     settings = world.get_settings()

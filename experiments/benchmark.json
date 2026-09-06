@@ -32,7 +32,9 @@
       "expect_collision": true,
       "intended_partner": "violator",
       "group": "junction",
-      "town": "Town10HD_Opt"
+      "town": "Town10HD_Opt",
+      "junction_turn": "straight",
+      "ego_light": "green"
     },
     {
       "name": "right_turn",
@@ -41,7 +43,9 @@
       "expect_collision": true,
       "intended_partner": "rear_ender",
       "group": "junction",
-      "town": "Town10HD_Opt"
+      "town": "Town10HD_Opt",
+      "junction_turn": "right",
+      "ego_light": "red"
     },
     {
       "name": "left_turn",
@@ -50,7 +54,9 @@
       "expect_collision": true,
       "intended_partner": "oncoming",
       "group": "junction",
-      "town": "Town05"
+      "town": "Town05",
+      "junction_turn": "left",
+      "ego_light": "green"
     },
     {
       "name": "stop_sign",
@@ -59,7 +65,9 @@
       "expect_collision": false,
       "intended_partner": null,
       "group": "junction",
-      "town": "Town10HD_Opt"
+      "town": "Town10HD_Opt",
+      "junction_turn": "straight",
+      "ego_light": null
     },
     {
       "name": "lane_change",
@@ -68,7 +76,9 @@
       "expect_collision": true,
       "intended_partner": "blocker",
       "group": "highway",
-      "town": "Town04"
+      "town": "Town04",
+      "junction_turn": "straight",
+      "ego_light": null
     },
     {
       "name": "cut_in",
@@ -77,7 +87,9 @@
       "expect_collision": true,
       "intended_partner": "hero",
       "group": "highway",
-      "town": "Town04"
+      "town": "Town04",
+      "junction_turn": "straight",
+      "ego_light": null
     },
     {
       "name": "overtake",
@@ -86,7 +98,9 @@
       "expect_collision": true,
       "intended_partner": "oncoming",
       "group": "highway",
-      "town": "Town04"
+      "town": "Town04",
+      "junction_turn": "straight",
+      "ego_light": null
     }
   ],
   "report_title": "Swapping the ego controller on the CARLA benchmark",
@@ -99,5 +113,7 @@
   "group_note": "The two families fail differently, and that is why they are reported apart. A junction scenario stages its conflict at a place the ego has to cross, so an ego that arrives late or slow misses the conflict entirely and is instead rear-ended by its own scripted follower -- drive() has no braking driver model. A highway scenario stages its conflict in the ego's own lane, so a slower ego still meets it; what changes is when, and whether the ego ends up the striker or the struck.",
   "town_note": "left_turn is the one junction scenario not on Town10HD_Opt. drive() re-projects the actor onto the nearest lane every tick rather than following the waypoint chain it was routed onto, so inside a junction it can be captured by an overlapping connector. Driving the controller out of all 40 junction approaches on Town10HD_Opt finds six that execute a ~90 degree left turn and none of them crosses an anti-parallel oncoming lane, so an unprotected left cannot be staged there at all without ram(). Town05 junction 2328 is a plain four-way that connects the left turn only from the innermost lane, which is exactly the rule the local simulator's grid town implements. See the header of scenarios/benchmark/left_turn.osc.",
   "construct_vocabulary": "These scenarios use only constructs the paper documents -- Table 2's capability checklist and Listings 1-3 of the hello_world case study. ram(target:) has been removed: it appears nowhere in the paper, and every adversarial outcome in the four junction scenarios previously depended on it. The striking vehicle now keeps executing drive() on its own lane at its own declared speed; drive() has no car-following, yielding or collision-avoidance term, so not changing what you are doing IS failing to give way. See PIPELINE_WALKTHROUGH.md, 'Construct provenance'.",
-  "impulse_note": "Peak impulses for the junction scenarios are not comparable with the ram-based runs recorded before them. ram applied full throttle regardless of the declared speed and steered onto the ego, so removing it changes the impact energy in both directions: right_turn falls from ~18600 to ~5160 and left_turn from ~20200 to ~5040, while red_light RISES from ~5300 to ~12300 because the truck now puts its full declared speed into the ego's flank instead of bleeding it in a turn. collision_occurred and the intended partner are unchanged, and those are what expect_collision and intended_partner test."
+  "impulse_note": "Peak impulses for the junction scenarios are not comparable with the ram-based runs recorded before them. ram applied full throttle regardless of the declared speed and steered onto the ego, so removing it changes the impact energy in both directions: right_turn falls from ~18600 to ~5160 and left_turn from ~20200 to ~5040, while red_light RISES from ~5300 to ~12300 because the truck now puts its full declared speed into the ego's flank instead of bleeding it in a turn. collision_occurred and the intended partner are unchanged, and those are what expect_collision and intended_partner test.",
+  "junction_turn_note": "Which exit the ego's route takes where its lane branches. A route is walked with waypoint.next()[0] and CARLA's ordering of the branches carries no meaning, so the manoeuvre the scenario is about has to be declared: red_light and stop_sign cross straight, right_turn turns right onto the lane it merges into, left_turn takes the unprotected left, and the three highway families never reach a junction. Passed to osc2carla as --junction-turn, which plans the ego's route once from its spawn (osc2carla/backend/route.py); before it was declared here the CARLA arm re-projected the ego onto the map every tick and took whichever connector was nearest -- measured on red_light, that handed the ego a left turn at x = -29.5, 19 m short of a junction it is supposed to drive through. Override a single run with $OSC2CARLA_JUNCTION_TURN.",
+  "ego_light_note": "The signal phase the ego's own approach is held at, set at spawn and frozen for the episode (osc2carla --ego-light, osc2carla/backend/signals.py). This dialect has no action that sets or reads a signal phase, so before it was declared here the phase was whichever one CARLA's cycle happened to be showing -- and on the junction families that decides the run: measured on red_light, PlanT 2.0 stopped 6.2 m short of traffic light 952 and never reached the conflict, while IDM, which reads no signal at all, was struck by the violator in the junction. red_light crosses on green and the violator takes the crossing red; left_turn is unprotected, so the oncoming traffic on the ego's own axis holds the same green; right_turn declares red -- a right turn on red -- but junction 841 does not serve it: the ego comes down an unsignalised minor arm and Town10HD_Opt carries no traffic-light landmark facing that approach within 150 m (the nearest, 959, is 60 m ahead and past the merge, governing a different arm). The declaration is kept because it records what the scenario is meant to be, and every run says in `ego_signal.note` that the map could not serve it, rather than reporting a phase that was never set. Staging a real right-on-red needs the family re-sited at a signalised junction. stop_sign is unsignalised by construction and the three highway families reach no junction, so all four declare nothing and nothing is set. Override one run with $OSC2CARLA_EGO_LIGHT (`none` turns it off)."
 }

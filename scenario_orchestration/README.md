@@ -6,7 +6,9 @@ Three files, and nothing in the rest of the repository knows they exist:
 scenario_orchestration/
 ├── capabilities.json            what this repository supports, machine-readable
 ├── run.py                       the standardized entry point the harness runs
-└── osc2carla_policy_bridge.py   an external ego_policy_v1 policy, loaded in
+├── osc2carla_policy_bridge.py   an external ego_policy_v1 policy, loaded in
+├── carla_state_obs.py           the object-centric half of the `state` space
+└── bev.py                       the BEV raster, from the policy's own renderer
 ```
 
 The contract itself -- the two JSON documents, the output format, the status
@@ -38,6 +40,7 @@ Three routes, tried in this order:
 |---|---|
 | `idm`, `idm_assertive`, `idm_conservative`, `constant` | realized natively; the request's SI parameter names are translated into this repository's (`desired_speed_mps` -> `v0`, ...) |
 | `scripted` / `none` | no ego policy: the compiled behaviour tree drives the ego, as it drives everything else |
+
 | anything else | loaded from its own repository's `scenario_orchestration/policy.py` through `osc2carla_policy_bridge.py` |
 
 An analytic policy is fully described by its parameters, which is why it needs
@@ -67,7 +70,7 @@ sensor is filed under `cameras` by its declared name, LiDAR and radar included:
 that is the key the installed policy adapters read, and renaming it here would
 be renaming it in repositories that are not ours.
 
-Four things about that path are load-bearing:
+Three things about that path are load-bearing:
 
 * **Capture is synchronous.** CARLA delivers sensor data asynchronously even in
   synchronous mode. Each sensor has its own queue and a capture blocks for the
@@ -81,11 +84,6 @@ Four things about that path are load-bearing:
 * **A sensor that delivered nothing is absent, never zero-filled.** A model
   cannot tell an all-zero raster from a clear road, so the policy has to be the
   one that decides what a missing sensor means. The count is reported per run.
-* **The route is resampled.** `ExternalEgoController` samples the road every 2 m
-  because that is what its own controllers want; the reference agents in this
-  family index a 1 m grid from 2.5 m ahead. The bridge converts, so a target
-  point lands where the model expects it rather than twice as far out.
-
 `--policy-hz` decouples the policy's decision rate from the simulation tick
 rate, holding the last command in between. It defaults to deciding on every
 tick, which is what the analytic policies have always done; a VLA asked for 20
@@ -97,18 +95,36 @@ there with that reason rather than driving it against an empty rig.
 
 ### What the policy sees
 
+The `state` document every method in the harness shares, this repository's own
+car-following view alongside it, and — for a policy that declared a rig — the
+rig's measurements:
+
 ```python
-{"t": 4.2,
- "ego": {"speed_mps": 7.9, "x": .., "y": .., "heading_rad": ..},
- "route": [[x, y], ...],                 # ego frame: +x forward, +y right
- "speed_limit_kph": 50.0,
- "sensor": {"cameras": {...}, "frame": 91823},
- "leader": {"gap_m": 12.4, "speed_mps": 6.1, ...} | None,
- "speed_mps": 7.9, "x": .., "y": .., "heading_rad": ..}   # the flat keys, kept
+{"ego": {"speed_mps": 7.9},
+ "objects": [{"type": "car", "position": [12.0, 0.2], ...}, ...],
+ "route": [[2.5, 0.0], [3.5, 0.0], ...],   # ego frame, 20 points, 1 m apart
+ "speed_limit_kph": 50,
+ "bev": {"semantic_classes": [[...]]},
+ "sensor": {"cameras": {"rgb_front": ndarray, "lidar": ndarray, ...},
+            "frame": 91823},
+ # the car-following view, under its own keys
+ "t": 4.2, "speed_mps": 7.9, "x": .., "y": .., "heading_rad": ..,
+ "route_world": [{"x": .., "y": .., "heading_rad": .., "s": 2.0}, ...],
+ "leader": {"gap_m": 12.4, "speed_mps": 6.1, ...} | None}
 ```
 
-and returns `{"control": {"throttle": .., "steer": .., "brake": ..}, ...}`. The
-older flat form and a bare `acceleration_mps2` are still accepted.
+`route` is the contract's ego-frame list and belongs to `carla_state_obs.py`,
+which samples it off the one plan walked from the ego's spawn; the world-frame
+samples this repository takes for its own IDM keep their own key rather than
+colliding with it.
+
+The policy returns `{"control": {"throttle": .., "steer": .., "brake": ..}, ...}`.
+A nested `control` block is read whichever action space is declared — both
+installed sensorimotor policies declare `control` precisely because they return
+what their own controllers produced from their waypoints. The older flat form
+and a bare `acceleration_mps2` are still accepted; a policy declaring
+`waypoints` and returning no control is refused rather than handed a follower
+written here.
 
 Relative `checkpoint` and `parameters.weights` paths in the policy request are
 resolved against the harness root before the policy sees them -- the harness
@@ -123,11 +139,11 @@ dropped a frame, the decision count, and whatever the policy reports about
 itself -- for a VLA, the text it generated. A result is only readable against
 the sensing it actually had.
 
-`OSC2CARLA_RECORD_VIDEO=1` writes `<family>.mp4` beside it: the chase cam, and
-under it the policy's own frames beside the command it returned. That panel is
-the cheapest check on a rig there is -- a camera mounted wrong, pointed
-backwards, or a frame late produces entirely plausible metrics and an obviously
-wrong picture.
+`OSC2CARLA_RECORD_VIDEO=1` writes `<family>.mp4` beside it: a top-down view and
+a chase camera side by side, and beneath them the policy's own frames next to
+the command it returned. That band is the cheapest check on a rig there is — a
+camera mounted wrong, pointed backwards, or a frame late produces entirely
+plausible metrics and an obviously wrong picture.
 
 ## Tests
 
