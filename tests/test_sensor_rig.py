@@ -412,14 +412,21 @@ assert policy.seen[0].speed_limit_kph == 50.0
 ok("the observation carries this tick's frames, stamped with this tick")
 
 # 2 Hz against 0.1 s steps: decide, hold four, decide again.
-for i in range(1, 5):
-    controller.tick(0.1 * i)
+held = [controller.tick(0.1 * i) for i in range(1, 5)]
 assert controller.decisions == 1, controller.decisions
 assert len(actor.controls) == 5      # the held command is still applied
 feed(102)
-controller.tick(0.5)
+fresh = controller.tick(0.5)
 assert controller.decisions == 2, controller.decisions
 ok("decision_hz holds the last command between decisions and still actuates")
+
+# A held tick is still a measured tick. The caller reads leader.gap off what
+# tick() returns for the run summary, and sampling that at the policy's
+# decision rate would report a closest approach nothing looked for.
+assert [round(o.t, 3) for o in held] == [0.1, 0.2, 0.3, 0.4]
+assert all(o.sensors == {} for o in held), "a held tick must not render"
+assert controller.last_observation.t == fresh.t == 0.5
+ok("a held tick reports this tick's state and renders nothing for it")
 
 detail = controller.describe()
 assert detail["observation_space"] == "state+sensor"

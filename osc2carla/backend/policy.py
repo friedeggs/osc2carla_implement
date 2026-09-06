@@ -436,7 +436,14 @@ class ExternalEgoController:
 
     # -- perception --------------------------------------------------------
 
-    def observe(self, sim_time: float) -> Observation:
+    def observe(self, sim_time: float, sensors: bool = True) -> Observation:
+        """The scene as of ``sim_time``.
+
+        ``sensors=False`` builds the state half only. The state half is a
+        handful of CARLA queries; the sensor half makes the simulator render,
+        which is the expensive part of a rendered tick. So a tick that is only
+        being measured, not decided on, skips it.
+        """
         a = self._actor
         tf = a.get_transform()
         v = a.get_velocity()
@@ -453,7 +460,7 @@ class ExternalEgoController:
             speed_limit_kph=self._speed_limit(),
         )
         obs.leader = self._find_leader(obs)
-        if self.rig is not None and self.rig.active:
+        if sensors and self.rig is not None and self.rig.active:
             # Captured after the pose is read and stamped with the same frame,
             # so the images and the state the policy reasons over are one tick.
             obs.sensors = self.rig.capture(obs.frame)
@@ -478,10 +485,14 @@ class ExternalEgoController:
     def tick(self, sim_time: float) -> Observation:
         """One simulation step: decide if due, otherwise hold the last command.
 
-        Returns the observation the returned command was decided on, which on a
-        held tick is the one from the decision that produced it -- the caller
-        reads ``leader.gap`` off it for the run summary, and reporting a fresh
-        gap beside a stale command would misdescribe what the policy acted on.
+        Returns THIS tick's state, whether or not a decision was taken. The
+        caller reads ``leader.gap`` off it for the run summary, and a run
+        summary sampled at the policy's decision rate rather than the
+        simulation's would report a closest approach that simply was not looked
+        for -- the ego covers metres between two decisions of a slow policy.
+        Only the sensors are skipped on a held tick, because only they cost a
+        render. What the policy actually saw stays available separately, as
+        :attr:`last_observation`.
         """
         self.ticks += 1
         if self._due(sim_time):
@@ -490,13 +501,15 @@ class ExternalEgoController:
             self._last_decision_t = sim_time
             self._last_observation = obs
             self.decisions += 1
+        else:
+            obs = self.observe(sim_time, sensors=False)
         if carla and self._command is not None:
             self._actor.apply_control(
                 carla.VehicleControl(throttle=self._command.throttle,
                                      steer=self._command.steer,
                                      brake=self._command.brake)
             )
-        return self._last_observation
+        return obs
 
     @property
     def command(self) -> Optional[Command]:
@@ -505,7 +518,11 @@ class ExternalEgoController:
 
     @property
     def last_observation(self) -> Optional[Observation]:
-        """The observation the currently applied command was decided on."""
+        """The observation the currently applied command was decided on.
+
+        Not this tick's state -- see :meth:`tick`. This is what the policy saw,
+        which is what a recording of the policy should show.
+        """
         return self._last_observation
 
     def vision_panel(self, height: int = 0):
