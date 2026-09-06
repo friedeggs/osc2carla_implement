@@ -95,6 +95,56 @@ def _running_leaves(node, out=None):
     return out
 
 
+def _vision_hook(controller, mode: str):
+    """The recorder's per-tick vision payload, or None for no panel.
+
+    Returns None -- meaning "record exactly as before" -- unless there is an ego
+    policy with an attached rig, so a scripted or analytic arm is unchanged: a
+    band of black under every frame would be noise, not information.
+
+    The lines beside the frames are the parts of the hand-off a viewer cannot
+    read off the images: the speed the policy was told, the command it returned,
+    and the route point it was steering at. A frame that looks right beside a
+    command that is not tells you the rig is fine and the policy is not, which
+    is the distinction a video is being watched for.
+    """
+    if mode == "off" or controller is None:
+        return None
+    rig = getattr(controller, "rig", None)
+    if rig is None or not rig.active:
+        if mode == "on":
+            print("[osc2carla] --vision-panel on, but the ego policy attached "
+                  "no sensor rig; recording without a panel", file=sys.stderr)
+        return None
+
+    def payload():
+        obs = controller.last_observation
+        lines = []
+        if obs is not None:
+            route = obs.route_ego()
+            far = route[-1] if route else None
+            lines.append(
+                "%s  t=%5.2fs  v=%4.1f m/s  decisions=%d"
+                % (getattr(controller.policy, "name", "policy"), obs.t,
+                   obs.speed, controller.decisions))
+            command = controller.command
+            if command is not None:
+                lines.append("throttle=%.2f  brake=%.2f  steer=%+.2f"
+                             % (command.throttle, command.brake, command.steer))
+            if far is None:
+                lines.append("route: none -- the policy is driving unconditioned")
+            else:
+                lines.append("route %d pts, far=(%+.1f, %+.1f) m"
+                             % (len(route), far[0], far[1]))
+        missing = [name for name in rig.names if name not in
+                   ((obs.sensors if obs is not None else {}) or {})]
+        if missing:
+            lines.append("no data this tick from: " + ", ".join(missing))
+        return {"panel": controller.vision_panel(), "lines": lines}
+
+    return payload
+
+
 def _binding_labels(annotated, ctx) -> dict:
     """actor id -> scenario binding name, so the overlay can name the cars."""
     labels = {}
@@ -181,6 +231,18 @@ def main(argv: Optional[List[str]] = None) -> int:
                         metavar="K=V",
                         help="Policy parameter override, repeatable "
                              "(e.g. --policy-param v0=8.3).")
+    parser.add_argument("--policy-hz", type=float, default=0.0,
+                        help="Decision rate for --ego-policy, holding the last "
+                             "command in between. 0 (default) decides on every "
+                             "simulation tick, which is what the analytic "
+                             "policies do. A network usually wants less: a VLA "
+                             "asked for 20 decisions per simulated second "
+                             "spends the run inside forward().")
+    parser.add_argument("--vision-panel", default="auto",
+                        choices=("auto", "on", "off"),
+                        help="Draw what the ego policy's sensor rig saw under "
+                             "the chase cam in --record-video. 'auto' (default) "
+                             "draws it whenever a rig is attached.")
     parser.add_argument("--metrics-out", default=None,
                         help="Write a JSON run summary (collision occurrence, "
                              "impulses, motion stats) to this path.")
@@ -293,6 +355,25 @@ def main(argv: Optional[List[str]] = None) -> int:
                 break
     rec_actor = ctx.actor(rec_binding) if rec_binding else None
 
+    # --- external ego controller entry point ---------------------------------
+    # Built before the recorder so the recording can draw the rig this
+    # controller attaches; it needs the world, the map and the context, none of
+    # which depend on the behaviour tree.
+    controller = None
+    if args.ego_policy:
+        policy_cls = resolve_policy(args.ego_policy)
+        controller = ExternalEgoController(world, carla_map, ctx, ego_binding,
+                                           policy_cls(), params=policy_params,
+                                           decision_hz=args.policy_hz)
+        unknown = getattr(controller.policy, "_unknown", None)
+        if unknown:
+            print(f"[osc2carla] warning: ignored unknown policy params {unknown}",
+                  file=sys.stderr)
+        print(f"[osc2carla] ego policy {args.ego_policy!r} driving {ego_binding!r}"
+              + (f" at {args.policy_hz:g} Hz" if args.policy_hz > 0 else "")
+              + "; behaviour-tree actuation for that binding is disabled",
+              file=sys.stderr)
+
     recorder = None
     viewer = None
     if local:
@@ -317,31 +398,20 @@ def main(argv: Optional[List[str]] = None) -> int:
             print("[osc2carla] --record-video needs rendering; "
                   "--render-mode off ignores it", file=sys.stderr)
     elif args.record_video and rec_actor is not None:
+        panel = _vision_hook(controller, args.vision_panel)
         recorder = Recorder(world, rec_actor, args.record_video,
                             width=args.record_width,
                             height=args.record_height,
-                            fps=args.record_fps)
-        print(f"[osc2carla] recording {rec_binding!r} -> {args.record_video}",
+                            fps=args.record_fps,
+                            vision=panel)
+        print(f"[osc2carla] recording {rec_binding!r} -> {args.record_video}"
+              + (" (with the policy's own camera rig)" if panel else ""),
               file=sys.stderr)
 
     tree = BehaviorTreeBuilder(annotated, ctx,
                                external_actors=external_actors).build()
     behaviour_tree = py_trees.trees.BehaviourTree(root=tree)
     behaviour_tree.setup(timeout=15)
-
-    # --- external ego controller entry point ---------------------------------
-    controller = None
-    if args.ego_policy:
-        policy_cls = resolve_policy(args.ego_policy)
-        controller = ExternalEgoController(world, carla_map, ctx, ego_binding,
-                                           policy_cls(), params=policy_params)
-        unknown = getattr(controller.policy, "_unknown", None)
-        if unknown:
-            print(f"[osc2carla] warning: ignored unknown policy params {unknown}",
-                  file=sys.stderr)
-        print(f"[osc2carla] ego policy {args.ego_policy!r} driving {ego_binding!r}; "
-              f"behaviour-tree actuation for that binding is disabled",
-              file=sys.stderr)
 
     metrics = None
     if args.metrics_out:
@@ -435,6 +505,8 @@ def main(argv: Optional[List[str]] = None) -> int:
                 scenario_path=os.path.abspath(args.scenario),
                 ego_policy=(args.ego_policy or "scripted"),
                 policy_params=policy_params,
+                ego_policy_detail=(controller.describe()
+                                   if controller is not None else None),
                 sim_duration=sim_t,
                 sim_duration_requested=sim_cap,
                 fixed_dt=args.fixed_dt,

@@ -56,8 +56,31 @@ request parameter, because it describes the machine rather than the experiment:
     OSC2CARLA_SIM_DURATION       simulated seconds; default per scenario
     OSC2CARLA_RUN_TIMEOUT_S      wall-clock budget for the child process
     OSC2CARLA_RECORD_VIDEO       1 to write <family>.mp4 into the output dir
+    OSC2CARLA_VISION_PANEL       auto (default) | on | off -- draw the ego
+                                 policy's own camera frames under the chase cam
+    OSC2CARLA_POLICY_HZ          ego-policy decision rate; 0/unset decides on
+                                 every simulated tick
+    OSC2CARLA_POLICY_WORKDIR     working directory for the run; a vision policy
+                                 may cache a backbone under it
     OSC2CARLA_NEAR_COLLISION_M   near-miss gap threshold, metres (default 2.0)
     OSC2CARLA_HARNESS_ROOT       where third_party/<policy repo> lives
+
+Sensor policies
+---------------
+A policy declaring ``observation_space: sensor`` is driven through the bridge
+like any other external policy; what changed is that the bridge now forwards the
+rig the policy asks for (``sensors()``) to ``osc2carla.backend.sensors``, which
+attaches it to the ego and captures it in lockstep with the simulation. Two
+consequences are worth stating where a reader of a result will look for them:
+
+* it is a CARLA-backend capability only. The bundled local simulator has no
+  camera blueprints, so a sensor policy there is refused with a reason rather
+  than driven against an empty rig -- an all-black frame is not a distribution
+  shift, it is a different experiment.
+* the rig is the policy's, never this file's. What was attached, at what rate,
+  and what failed to attach is recorded in the run summary under
+  ``ego_policy_detail.sensor_rig``, so a result can be read against the sensing
+  it actually had.
 """
 
 from __future__ import annotations
@@ -439,7 +462,14 @@ def native_parameter_names(policy: str) -> Sequence[str]:
         return NATIVE_PARAMETERS.get(policy, ())
 
 
-def build_policy_plan(policy_request: Dict[str, Any], request_path: str
+#: Observation spaces this runtime can serve. ``state`` is pose, speed, the
+#: sampled route and the closest leader on it; the sensor forms add the rig the
+#: policy itself declares, and exist only on the CARLA backend.
+OBSERVATION_SPACES = ("state", "sensor", "state+sensor")
+
+
+def build_policy_plan(policy_request: Dict[str, Any], request_path: str,
+                      backend: str = "carla"
                       ) -> Tuple[List[str], Dict[str, str], Dict[str, Any]]:
     """``(cli args, extra env, notes)`` for the requested ego policy.
 
@@ -464,11 +494,21 @@ def build_policy_plan(policy_request: Dict[str, Any], request_path: str
             "policy %r declares interface %r; osc2carla_implement speaks "
             "'ego_policy_v1'" % (name or implementation, interface)
         )
-    if observation_space != "state":
+    if observation_space not in OBSERVATION_SPACES:
         raise RequestError(
-            "policy %r wants a %r observation space; this runtime hands the ego "
-            "policy state only (pose, speed, sampled route, closest leader) and "
-            "renders no sensor stream" % (name or implementation, observation_space)
+            "policy %r wants a %r observation space; this runtime provides %s"
+            % (name or implementation, observation_space,
+               " and ".join(sorted(OBSERVATION_SPACES)))
+        )
+    if observation_space != "state" and backend != "carla":
+        raise RequestError(
+            "policy %r wants a %r observation space, and this run is on the "
+            "%s backend, which has no camera, LiDAR or radar blueprints. "
+            "Running it there would hand the policy an empty rig, and a model "
+            "cannot tell an empty rig from an empty road -- so the refusal is "
+            "the honest result. Run it on the CARLA backend "
+            "(OSC2CARLA_BACKEND=carla)."
+            % (name or implementation, observation_space, backend)
         )
     if action_space != "control":
         raise RequestError(
@@ -511,14 +551,22 @@ def build_policy_plan(policy_request: Dict[str, Any], request_path: str
                policy_request.get("repository") or "?",
                policy_request.get("entry_point") or "scenario_orchestration/policy.py")
         )
+    notes = {
+        "policy_mode": "bridged",
+        "policy_entry_point": entry_point,
+        "policy_observation_space": observation_space,
+        "policy_action_space": action_space,
+        "policy_note": "loaded through "
+                       "scenario_orchestration/osc2carla_policy_bridge.py",
+    }
+    if observation_space != "state":
+        notes["policy_note"] += ("; its own sensors() declares the rig, which "
+                                 "osc2carla.backend.sensors attaches to the ego")
     return (
         ["--ego-policy", BRIDGE_POLICY],
         {"OSC2CARLA_POLICY_REQUEST": os.path.abspath(request_path),
          "OSC2CARLA_POLICY_ENTRY_POINT": entry_point},
-        {"policy_mode": "bridged",
-         "policy_entry_point": entry_point,
-         "policy_note": "loaded through "
-                        "scenario_orchestration/osc2carla_policy_bridge.py"},
+        notes,
     )
 
 
@@ -549,7 +597,9 @@ def locate_policy_entry_point(policy_request: Dict[str, Any],
 def build_command(scenario_path: str, backend: str, town: Optional[str],
                   intent: Dict[str, Any], duration: float, fixed_dt: float,
                   policy_args: Sequence[str], output_dir: str, family: str,
-                  ego_binding: Optional[str]) -> List[str]:
+                  ego_binding: Optional[str],
+                  parameters: Optional[Dict[str, Any]] = None) -> List[str]:
+    parameters = dict(parameters or {})
     interpreter = _env("OSC2CARLA_PYTHON") or sys.executable
     command = [interpreter, "-m", "osc2carla", scenario_path,
                "--backend", "pygame" if backend == "pygame" else "carla",
@@ -571,10 +621,18 @@ def build_command(scenario_path: str, backend: str, town: Optional[str],
         command += ["--junction-turn", str(intent.get("junction_turn") or "straight")]
         if town:
             command += ["--town", town]
+    policy_hz = _env_float("OSC2CARLA_POLICY_HZ") \
+        or _as_float(parameters.get("policy_hz"))
+    if policy_hz and policy_hz > 0:
+        command += ["--policy-hz", "%r" % policy_hz]
     if _env_flag("OSC2CARLA_RECORD_VIDEO"):
         command += ["--record-video", os.path.join(output_dir, family + ".mp4"),
                     "--record-fps", "20", "--record-width", "1280",
-                    "--record-height", "720"]
+                    "--record-height", "720",
+                    # 'auto' draws the ego policy's own frames whenever a rig is
+                    # attached and changes nothing for the analytic arms, which
+                    # is why it is the default rather than a flag to remember.
+                    "--vision-panel", _env("OSC2CARLA_VISION_PANEL") or "auto"]
         if backend == "pygame":
             command += ["--render-mode", "headless"]
     elif backend == "pygame":
@@ -596,12 +654,34 @@ def child_environment(extra: Dict[str, str], seed: int) -> Dict[str, str]:
     return env
 
 
+def policy_workdir() -> str:
+    """Where the run's child process runs.
+
+    ``REPO_ROOT`` by default, and nothing in osc2carla depends on it -- the
+    stdlib is found from the package and every path this file passes is
+    absolute. It is overridable because a vision policy's inference stack may
+    not be so indifferent: SimLingo's own agent caches its InternVL2 backbone
+    under ``pretrained/<variant>`` relative to the working directory, and a
+    multi-gigabyte download inside a git submodule shows up forever as
+    uncommitted changes in the harness that contains it.
+    """
+    override = _env("OSC2CARLA_POLICY_WORKDIR")
+    if override and os.path.isdir(override):
+        return override
+    if override:
+        sys.stderr.write("[run.py] OSC2CARLA_POLICY_WORKDIR=%r is not a "
+                         "directory; running in %s\n" % (override, REPO_ROOT))
+    return REPO_ROOT
+
+
 def run_osc2carla(command: Sequence[str], env: Dict[str, str], timeout_s: float,
-                  output_dir: str) -> Tuple[Optional[int], str, str, bool]:
+                  output_dir: str, workdir: Optional[str] = None
+                  ) -> Tuple[Optional[int], str, str, bool]:
+    workdir = workdir or REPO_ROOT
     started = time.time()
     timed_out = False
     try:
-        completed = subprocess.run(list(command), cwd=REPO_ROOT, env=env,
+        completed = subprocess.run(list(command), cwd=workdir, env=env,
                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                    universal_newlines=True, timeout=timeout_s)
         stdout, stderr, returncode = completed.stdout, completed.stderr, completed.returncode
@@ -753,7 +833,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         duration, duration_source = resolve_duration(evaluation, intent, parameters)
         fixed_dt = resolve_fixed_dt(evaluation, parameters)
         policy_args, policy_env, policy_notes = build_policy_plan(
-            policy_request, args.policy_request)
+            policy_request, args.policy_request, backend)
     except RequestError as exc:
         return write_result(output_dir, "failure", method_metrics=context,
                             reason=str(exc))
@@ -783,7 +863,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     command = build_command(scenario_path, backend, town, intent, duration,
                             fixed_dt, policy_args, output_dir, family,
-                            ego_binding)
+                            ego_binding, parameters)
     timeout_s = _env_float("OSC2CARLA_RUN_TIMEOUT_S") \
         or (900.0 if backend == "carla" else max(300.0, 30.0 * max(duration, 1.0)))
     # The wall-clock bound osc2carla puts on its own tick loop, inside ours.
@@ -797,8 +877,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                         1.0 / fixed_dt if fixed_dt else 0.0))
 
     started = time.time()
+    workdir = policy_workdir()
+    context["workdir"] = workdir
     returncode, _stdout, stderr, timed_out = run_osc2carla(
-        command, child_environment(policy_env, seed), timeout_s, output_dir)
+        command, child_environment(policy_env, seed), timeout_s, output_dir,
+        workdir)
     context["wall_time_s"] = round(time.time() - started, 3)
     context["returncode"] = returncode
 

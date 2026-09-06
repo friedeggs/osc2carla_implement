@@ -30,6 +30,21 @@ Perception (route sampling, leader detection) is done by
 :class:`ExternalEgoController` and handed to the policy as a plain
 :class:`Observation`; the policy returns a plain :class:`Command`.  Neither
 type touches CARLA, so a policy is testable without a simulator.
+
+Sensors
+-------
+A policy that needs to *see* declares its own rig -- ``sensors()`` or
+``camera_rig`` (see :class:`EgoPolicy`) -- and :mod:`osc2carla.backend.sensors`
+attaches exactly that to the ego, capturing each sensor's measurement for the
+tick the observation describes.  ``Observation.sensors`` then carries those
+measurements and ``Observation.route_ego()`` gives the route in the frame those
+models are conditioned on.  A policy that declares no rig sees exactly what it
+saw before: pose, speed, the sampled route and the closest leader.
+
+That is the whole of what used to be missing, and it is why
+``capabilities.json`` can now declare a ``sensor`` observation space on the
+CARLA backend.  The local backend has no camera blueprints, so a sensor policy
+is refused there rather than driven blind.
 """
 from __future__ import annotations
 
@@ -72,6 +87,36 @@ class Observation:
     heading: float                  # radians
     route: List[RoutePoint] = field(default_factory=list)
     leader: Optional[Leader] = None
+    #: This tick's sensor measurements, keyed by the name the policy declared in
+    #: ``sensors()``. Empty for a ``state``-only policy, which is every policy
+    #: that ran before this repository grew a rig. A sensor that delivered
+    #: nothing this tick is ABSENT rather than zero-filled: a model cannot tell
+    #: an all-zero raster from a clear road, so the distinction has to survive.
+    sensors: Dict[str, Any] = field(default_factory=dict)
+    #: The world frame these measurements are stamped with, when the simulator
+    #: reports one. Carried so a run can prove the images and the pose came from
+    #: the same tick rather than assert it.
+    frame: Optional[int] = None
+    #: The ego's current road speed limit, km/h, or None where the simulator
+    #: does not report one.
+    speed_limit_kph: Optional[float] = None
+
+    def route_ego(self) -> List[List[float]]:
+        """The sampled route in the EGO frame: +x forward, +y right, metres.
+
+        World coordinates are what this repository's own controllers use, but
+        every route-conditioned driving model in this family is trained on the
+        ego-frame form -- it is what ``get_relative_transform`` returns upstream.
+        Converting here, in CARLA's own handedness, keeps the one conversion in
+        the one place that knows the ego pose, and keeps a policy from having to
+        rediscover the convention (and get the sign of ``y`` wrong).
+        """
+        c, s = math.cos(self.heading), math.sin(self.heading)
+        out: List[List[float]] = []
+        for rp in self.route:
+            dx, dy = rp.x - self.x, rp.y - self.y
+            out.append([dx * c + dy * s, -dx * s + dy * c])
+        return out
 
 
 @dataclass
@@ -94,7 +139,26 @@ class Command:
 # --------------------------------------------------------------------------
 
 class EgoPolicy:
-    """Base class for an external ego controller."""
+    """Base class for an external ego controller.
+
+    Two optional hooks declare a sensor rig, and a policy that uses neither is a
+    ``state``-only policy that never sees one:
+
+    ``sensors()``
+        Returns the rig to attach, as :mod:`~.sensors` specs or as plain dicts.
+        This is the form an external policy repository should use, because a
+        policy describing its own rig must not have to import an execution
+        method to do it.
+
+    ``camera_rig``
+        A string naming one of :data:`~.sensors.RIGS`, for a policy that is
+        trained behind a rig this repository already knows.
+
+    A sensorimotor policy declares its own rig for a reason worth restating: it
+    was trained behind one specific set of intrinsics and mountings, and a rig
+    chosen by the runner instead would publish the runner's behaviour under the
+    model's name.
+    """
 
     name = "policy"
 
@@ -277,14 +341,25 @@ class ExternalEgoController:
     """Drives one binding from an :class:`EgoPolicy` instead of the tree.
 
     Ticked once per simulation step, after the behaviour tree.  Does the
-    perception the policy needs (route ahead, closest leader on that route)
-    and applies the returned command to the CARLA actor.
+    perception the policy needs -- route ahead, closest leader on that route,
+    and, for a policy that asks for one, the sensor rig's measurements for this
+    exact tick -- and applies the returned command to the CARLA actor.
+
+    Decision rate
+    -------------
+    ``decision_hz`` decouples the policy's decision rate from the simulation
+    tick rate, holding the last command in between.  It defaults to 0, meaning
+    "decide on every tick", which is what the analytic policies have always
+    done and what keeps their results unchanged.  A network is the reason the
+    knob exists: a VLA at 20 decisions per simulated second spends most of a
+    run inside ``forward``, and the CARLA Leaderboard the sensorimotor
+    checkpoints were trained under does not tick them that fast either.
     """
 
     def __init__(self, world, carla_map, ctx, binding: str, policy: EgoPolicy,
                  params: Optional[Dict[str, float]] = None,
                  route_step: float = 2.0, route_horizon: float = 60.0,
-                 corridor: float = 2.2):
+                 corridor: float = 2.2, decision_hz: float = 0.0):
         self.world = world
         self.map = carla_map
         self.ctx = ctx
@@ -293,16 +368,73 @@ class ExternalEgoController:
         self.route_step = route_step
         self.route_horizon = route_horizon
         self.corridor = corridor
-        self.ticks = 0
+        self.decision_hz = float(decision_hz or 0.0)
+        self.ticks = 0          # simulation steps this controller was asked for
+        self.decisions = 0      # times the policy was actually consulted
+        self.rig = None         # SensorRig, for a policy that declared one
+        self._command: Optional[Command] = None
+        self._last_decision_t: Optional[float] = None
+        self._last_observation: Optional[Observation] = None
         self._actor = ctx.actor(binding)
         if self._actor is None:
             raise RuntimeError(f"ego policy: no spawned actor for binding {binding!r}")
+        self._build_rig()
         self.policy.setup(world=world, carla_map=carla_map, actor=self._actor,
                           binding=binding, params=params or {})
 
     @property
     def actor(self):
         return self._actor
+
+    # -- sensors -----------------------------------------------------------
+
+    def _build_rig(self) -> None:
+        """Attach whatever rig the policy asked for, before the run starts.
+
+        Built before ``policy.setup`` so that a policy which loads a network in
+        setup fails after the cheap step, not before it, and so that a policy
+        may look at ``controller.rig`` from setup if it wants to.
+
+        Nothing attached is not fatal here.  The local backend has no camera
+        blueprints at all, and a policy that cannot see is the only thing that
+        can say whether that ends the run -- so the failure is recorded, printed
+        once, and left to the caller.  ``scenario_orchestration/run.py`` is where
+        it becomes a refusal, because that is where the request says the policy
+        needs a sensor observation space.
+        """
+        declared = None
+        sensors = getattr(self.policy, "sensors", None)
+        if callable(sensors):
+            declared = sensors()
+        else:
+            named = getattr(self.policy, "camera_rig", None)
+            if named:
+                from .sensors import rig as named_rig
+                declared = named_rig(str(named))
+        if not declared:
+            return
+        from .sensors import SensorRig, specs_from
+        self.rig = SensorRig(self.world, self._actor, specs_from(declared)).spawn()
+        import sys
+        if not self.rig.active:
+            sys.stderr.write(
+                "[osc2carla] sensor rig requested but nothing attached: %s\n"
+                % ("; ".join(self.rig.failed) or "no sensors created"))
+        else:
+            sys.stderr.write(
+                "[osc2carla] sensor rig: %s attached at %.0f Hz%s\n"
+                % (", ".join(self.rig.names), self.rig.sensor_hz,
+                   "; failed: " + "; ".join(self.rig.failed)
+                   if self.rig.failed else ""))
+
+    def _frame(self) -> Optional[int]:
+        """The world frame this tick's measurements must be stamped with."""
+        try:
+            return self.world.get_snapshot().frame
+        except (AttributeError, RuntimeError):
+            return None
+
+    # -- perception --------------------------------------------------------
 
     def observe(self, sim_time: float) -> Observation:
         a = self._actor
@@ -317,22 +449,104 @@ class ExternalEgoController:
             y=tf.location.y,
             heading=math.radians(tf.rotation.yaw),
             route=route,
+            frame=self._frame(),
+            speed_limit_kph=self._speed_limit(),
         )
         obs.leader = self._find_leader(obs)
+        if self.rig is not None and self.rig.active:
+            # Captured after the pose is read and stamped with the same frame,
+            # so the images and the state the policy reasons over are one tick.
+            obs.sensors = self.rig.capture(obs.frame)
         return obs
+
+    def _speed_limit(self) -> Optional[float]:
+        try:
+            limit = float(self._actor.get_speed_limit())
+        except (RuntimeError, AttributeError, TypeError):
+            return None
+        # CARLA reports 0 until the vehicle has passed a speed-limit sign, and
+        # a 0 limit read as a limit would tell a planner to stop.
+        return limit if limit > 1.0 else None
+
+    # -- the loop ----------------------------------------------------------
+
+    def _due(self, sim_time: float) -> bool:
+        if self.decision_hz <= 0 or self._command is None:
+            return True
+        return sim_time + 1e-9 >= (self._last_decision_t or 0.0) + 1.0 / self.decision_hz
 
     def tick(self, sim_time: float) -> Observation:
-        obs = self.observe(sim_time)
-        cmd = self.policy.act(obs).clamped()
-        if carla:
-            self._actor.apply_control(
-                carla.VehicleControl(throttle=cmd.throttle, steer=cmd.steer,
-                                     brake=cmd.brake)
-            )
+        """One simulation step: decide if due, otherwise hold the last command.
+
+        Returns the observation the returned command was decided on, which on a
+        held tick is the one from the decision that produced it -- the caller
+        reads ``leader.gap`` off it for the run summary, and reporting a fresh
+        gap beside a stale command would misdescribe what the policy acted on.
+        """
         self.ticks += 1
-        return obs
+        if self._due(sim_time):
+            obs = self.observe(sim_time)
+            self._command = self.policy.act(obs).clamped()
+            self._last_decision_t = sim_time
+            self._last_observation = obs
+            self.decisions += 1
+        if carla and self._command is not None:
+            self._actor.apply_control(
+                carla.VehicleControl(throttle=self._command.throttle,
+                                     steer=self._command.steer,
+                                     brake=self._command.brake)
+            )
+        return self._last_observation
+
+    @property
+    def command(self) -> Optional[Command]:
+        """The command currently applied to the ego, held or fresh."""
+        return self._command
+
+    @property
+    def last_observation(self) -> Optional[Observation]:
+        """The observation the currently applied command was decided on."""
+        return self._last_observation
+
+    def vision_panel(self, height: int = 0):
+        """This tick's camera frames as one strip, or None.
+
+        Reads the measurements the policy was ACTUALLY given rather than
+        capturing again: a second capture would drain the sensor queues the
+        controller is synchronising on, so the recording would silently change
+        what the policy sees.
+        """
+        if self.rig is None or self._last_observation is None:
+            return None
+        return self.rig.panel(self._last_observation.sensors, height=height)
+
+    def describe(self) -> Dict[str, Any]:
+        """What this hand-off actually did, for the run summary."""
+        out: Dict[str, Any] = {
+            "policy": getattr(self.policy, "name", "policy"),
+            "binding": self.binding,
+            "observation_space": "state+sensor" if (
+                self.rig is not None and self.rig.active) else "state",
+            "decision_hz": self.decision_hz or None,
+            "decisions": self.decisions,
+            "control_steps": self.ticks,
+            "sensor_rig": self.rig.describe() if self.rig is not None else None,
+        }
+        # Whatever the policy says about itself -- for a bridged policy that is
+        # the checkpoint it loaded and, for a VLA, the text it generated. Passed
+        # through a JSON filter because this ends up in a JSON summary and a
+        # stray tensor in a report must not lose the whole run's metrics.
+        described = getattr(self.policy, "metadata", None)
+        if callable(described):
+            try:
+                out["policy_metadata"] = _jsonable(described())
+            except Exception as exc:  # noqa: BLE001 - a report must not fail a run
+                out["policy_metadata_error"] = str(exc)
+        return out
 
     def teardown(self) -> None:
+        if self.rig is not None:
+            self.rig.destroy()
         try:
             self.policy.teardown()
         except Exception:  # noqa: BLE001
@@ -409,6 +623,24 @@ class ExternalEgoController:
                 best_d = d
                 best_s = rp.s
         return best_d, best_s
+
+
+def _jsonable(value: Any, depth: int = 0) -> Any:
+    """``value`` reduced to something ``json.dump`` will accept.
+
+    Anything it does not recognise becomes its ``repr``, truncated. A policy's
+    self-description is free-form by design -- it is the policy repository's
+    text, not ours -- so the run summary has to survive whatever is in it.
+    """
+    if isinstance(value, (str, bool, int, float)) or value is None:
+        return value
+    if depth > 6:
+        return repr(value)[:200]
+    if isinstance(value, dict):
+        return {str(k): _jsonable(v, depth + 1) for k, v in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [_jsonable(v, depth + 1) for v in value]
+    return repr(value)[:200]
 
 
 def _half_length(actor) -> float:
