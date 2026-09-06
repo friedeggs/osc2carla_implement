@@ -636,7 +636,7 @@ def build_command(scenario_path: str, backend: str, town: Optional[str],
                     # 'auto' draws the ego policy's own frames whenever a rig is
                     # attached and changes nothing for the analytic arms, which
                     # is why it is the default rather than a flag to remember.
-                    "--vision-panel", _env("OSC2CARLA_VISION_PANEL") or "auto"]
+                    "--vision-panel", vision_panel_mode()]
         if backend == "pygame":
             command += ["--render-mode", "headless"]
     elif backend == "pygame":
@@ -656,6 +656,27 @@ def child_environment(extra: Dict[str, str], seed: int) -> Dict[str, str]:
     env.setdefault("PYTHONHASHSEED", str(seed))
     env.update(extra)
     return env
+
+
+#: What OSC2CARLA_VISION_PANEL may say.
+VISION_PANEL_MODES = ("auto", "on", "off")
+
+
+def vision_panel_mode() -> str:
+    """The vision-panel setting, or ``auto`` if the operator mistyped it.
+
+    Passed straight to an argparse ``choices``, so an unrecognised value would
+    otherwise abort the child with a usage error -- a whole cell lost to a
+    misspelled environment variable, and one that would repeat for every cell
+    in the matrix. A recording preference is not worth that.
+    """
+    mode = (_env("OSC2CARLA_VISION_PANEL") or "auto").lower()
+    if mode in VISION_PANEL_MODES:
+        return mode
+    sys.stderr.write("[run.py] OSC2CARLA_VISION_PANEL=%r is not one of %s; "
+                     "using 'auto'\n"
+                     % (mode, ", ".join(VISION_PANEL_MODES)))
+    return "auto"
 
 
 def policy_workdir() -> str:
