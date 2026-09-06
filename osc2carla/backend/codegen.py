@@ -74,50 +74,37 @@ def emit(annotated: AnnotatedScenario, source_path: str) -> str:
         out.write(f"    root = {expr}\n")
         out.write("    return root\n")
 
-    out.write(_FOOTER)
+    out.write(_FOOTER.replace("# @LEFTOVER_ACTOR_SOURCE@",
+                              _leftover_actor_source()))
     return out.getvalue()
+
+
+def _leftover_actor_source() -> str:
+    """``initializer.clear_leftover_actors`` as text, for the emitted script.
+
+    Inlined rather than imported because the point of ``--emit-python`` is a
+    file that runs without this package. Taken from the source rather than
+    copied into the template because a copy is how the live path came to be
+    missing the fix that the emitted path had: the two must not be able to
+    drift again.
+    """
+    import inspect
+
+    from . import initializer
+
+    return "\n".join((
+        "#: Actor categories no CARLA map ships, and which therefore can only",
+        "#: be left over from a previous run on this world.",
+        "LEFTOVER_PREFIXES = %r" % (initializer.LEFTOVER_PREFIXES,),
+        "",
+        "",
+        inspect.getsource(initializer.clear_leftover_actors).rstrip(),
+    ))
 
 
 _FOOTER = '''
 
-#: Actor categories no CARLA map ships, and which therefore can only be left
-#: over from a previous run on this world.
-LEFTOVER_PREFIXES = ("vehicle.", "walker.", "sensor.", "static.prop.")
-
-
-def _clear_leftover_actors(world) -> int:
-    """Destroy actors a previous run left in this world. Returns the count."""
-    try:
-        actors = list(world.get_actors())
-    except (RuntimeError, AttributeError):
-        return 0
-    doomed = [a for a in actors
-              if str(getattr(a, "type_id", "")).startswith(LEFTOVER_PREFIXES)]
-    if not doomed:
-        return 0
-    # Sensors first: a sensor outlives its parent's destruction and keeps
-    # streaming into a callback that no longer has anywhere to put the data.
-    doomed.sort(key=lambda a: not str(a.type_id).startswith("sensor."))
-    cleared = 0
-    for actor in doomed:
-        try:
-            if str(actor.type_id).startswith("sensor."):
-                try:
-                    actor.stop()
-                except (RuntimeError, AttributeError):
-                    pass
-            actor.destroy()
-            cleared += 1
-        except RuntimeError:
-            pass          # already gone, which is the outcome we wanted
-    try:
-        world.tick()
-    except RuntimeError:
-        pass
-    print("[codegen] cleared %d actor(s) left over from a previous run on this "
-          "world" % cleared)
-    return cleared
-
+# @LEFTOVER_ACTOR_SOURCE@
 
 def main(argv=None):
     p = argparse.ArgumentParser()
@@ -154,7 +141,9 @@ def main(argv=None):
         # wrong result, not a crash, which is the dangerous kind. Nothing a map
         # ships is a vehicle, a walker, a sensor or a spawned prop, so clearing
         # those is safe and is what a map change would have done anyway.
-        _clear_leftover_actors(world)
+        cleared = clear_leftover_actors(world)
+        if cleared:
+            print('[codegen] cleared %d leftover actor(s)' % cleared)
     carla_map = world.get_map()
 
     settings = world.get_settings()

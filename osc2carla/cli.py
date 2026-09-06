@@ -329,6 +329,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     print(f"  variables: {[v.name for v in annotated.scenario.variables]}", file=sys.stderr)
 
     from .backend import BehaviorTreeBuilder, ExecutionContext, Recorder, ScenarioInitializer
+    from .backend.initializer import clear_leftover_actors
     from .backend import simapi
     from .backend.metrics import MetricsCollector
     from .backend.trace import SceneTracer, make_recorder
@@ -398,6 +399,20 @@ def main(argv: Optional[List[str]] = None) -> int:
         settings.synchronous_mode = True
         settings.fixed_delta_seconds = args.fixed_dt
         world.apply_settings(settings)
+
+    if not local:
+        # Before anything is spawned, and on the live path -- not only in the
+        # script codegen emits, which is where this check first landed and where
+        # the harness never runs. A world whose town was already loaded keeps
+        # whatever a crashed run left standing, and the next cast goes on top of
+        # it. Measured on red_light: two egos at the same coordinates, the
+        # collision sensor naming `vehicle.tesla.model3` with role `ego` as the
+        # partner on every one of 181 ticks, 0.4 m travelled, and a full set of
+        # metrics describing a scenario that never ran.
+        cleared = clear_leftover_actors(world)
+        if cleared:
+            print(f"[osc2carla] cleared {cleared} actor(s) left over from a "
+                  f"previous run on this world", file=sys.stderr)
 
     ctx = ExecutionContext(annotated, world=world, carla_map=carla_map)
     initializer = ScenarioInitializer(world, carla_map, annotated, ctx)
