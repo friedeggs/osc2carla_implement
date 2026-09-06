@@ -565,7 +565,11 @@ def build_policy_plan(policy_request: Dict[str, Any], request_path: str,
     return (
         ["--ego-policy", BRIDGE_POLICY],
         {"OSC2CARLA_POLICY_REQUEST": os.path.abspath(request_path),
-         "OSC2CARLA_POLICY_ENTRY_POINT": entry_point},
+         "OSC2CARLA_POLICY_ENTRY_POINT": entry_point,
+         # The bridge resolves the request's relative checkpoint paths against
+         # this. Found here, where the request path is known, rather than
+         # rediscovered there.
+         "OSC2CARLA_POLICY_ROOT": harness_root(request_path) or ""},
         notes,
     )
 

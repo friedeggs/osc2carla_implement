@@ -40,6 +40,10 @@ except Exception:  # noqa: BLE001
 #: choosing one. Tall enough to read a 384-row rig strip scaled to 1280 wide.
 DEFAULT_VISION_HEIGHT = 260
 
+#: Margin width, in pixels, at which the telemetry lines are worth putting
+#: beside the rig's frames instead of on top of them.
+TELEMETRY_WIDTH = 380
+
 
 class Recorder:
     def __init__(self, world, target_actor, output_video: str,
@@ -158,6 +162,7 @@ class Recorder:
                         cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 1, cv2.LINE_AA)
             return band
         panel = payload.get("panel")
+        text_x, text_y = 12, 24
         if panel is not None:
             panel = np.asarray(panel)[..., :3]
             # The rig hands over RGB; cv2 writes BGR, and the chase-cam frame
@@ -173,8 +178,21 @@ class Recorder:
                     / scale).astype(int).clip(0, panel.shape[1] - 1)
             fitted = panel[rows][:, cols]
             band[:fitted.shape[0], :fitted.shape[1]] = fitted
+            # A rig narrower than the frame leaves a margin, and the telemetry
+            # belongs there rather than on top of the picture -- the picture is
+            # the thing being checked.
+            if self.width - fitted.shape[1] >= TELEMETRY_WIDTH:
+                text_x = fitted.shape[1] + 12
         for i, line in enumerate(payload.get("lines") or []):
-            cv2.putText(band, str(line)[:120], (12, 24 + 26 * i),
+            y = text_y + 26 * i
+            if text_x < TELEMETRY_WIDTH:
+                # Over the picture: a dark backing, or yellow on a bright sky is
+                # unreadable exactly when the sky is what you want to see.
+                (w, h), _ = cv2.getTextSize(str(line)[:120],
+                                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, 1)
+                cv2.rectangle(band, (text_x - 6, y - h - 6),
+                              (text_x + w + 6, y + 8), (0, 0, 0), -1)
+            cv2.putText(band, str(line)[:120], (text_x, y),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 1, cv2.LINE_AA)
         return band
 
@@ -195,6 +213,22 @@ class Recorder:
             pass
         if self._frame_idx == 0:
             return None
+        reasons = []
+        for encode in (self._encode_ffmpeg, self._encode_opencv):
+            problem = encode()
+            if problem is None:
+                return self.output_video
+            reasons.append(problem)
+        return self._no_encode("; ".join(reasons))
+
+    def _encode_ffmpeg(self) -> Optional[str]:
+        """h264 through the ffmpeg CLI, or why it could not be done.
+
+        Tried first because it produces the most portable file. It is not always
+        available: the CARLA + torch image these runs happen in has no ffmpeg,
+        and an ffmpeg from the surrounding module tree is usually linked against
+        a newer libc than the image has.
+        """
         cmd = [
             "ffmpeg", "-y", "-loglevel", "error",
             "-framerate", str(self.fps),
@@ -203,7 +237,67 @@ class Recorder:
             self.output_video,
         ]
         try:
-            subprocess.run(cmd, check=False)
-            return self.output_video
-        except FileNotFoundError:
-            return None
+            completed = subprocess.run(cmd, check=False, stderr=subprocess.PIPE,
+                                       universal_newlines=True)
+        except OSError as exc:
+            return f"ffmpeg could not be run ({exc})"
+        if completed.returncode != 0 or not os.path.exists(self.output_video):
+            # Reported rather than swallowed. This used to return the output
+            # path whatever ffmpeg did, so a failed encode looked exactly like a
+            # successful one until somebody went looking for the file.
+            first = next((line for line in
+                          (completed.stderr or "").splitlines() if line.strip()),
+                         f"exit code {completed.returncode}")
+            return f"ffmpeg failed ({first})"
+        return None
+
+    def _encode_opencv(self) -> Optional[str]:
+        """The same frames through OpenCV's own encoder.
+
+        cv2 is already a hard dependency of this recorder -- it draws the
+        overlay -- and its wheels bundle their own FFmpeg, so this works in an
+        environment with no ffmpeg on PATH. That is the environment a
+        sensorimotor policy actually runs in, which is why the fallback exists
+        rather than a note telling the operator to install something.
+        """
+        if cv2 is None:
+            return "OpenCV is not available"
+        frames = sorted(glob.glob(os.path.join(self.frames_dir, "frame_*.png")))
+        if not frames:
+            return "no frames were captured"
+        first = cv2.imread(frames[0])
+        if first is None:
+            return f"could not read {frames[0]}"
+        height, width = first.shape[:2]
+        for fourcc in ("avc1", "mp4v"):
+            writer = cv2.VideoWriter(self.output_video,
+                                     cv2.VideoWriter_fourcc(*fourcc),
+                                     float(self.fps), (width, height))
+            if not writer.isOpened():
+                writer.release()
+                continue
+            for path in frames:
+                image = cv2.imread(path)
+                if image is not None:
+                    writer.write(image)
+            writer.release()
+            if os.path.exists(self.output_video) \
+                    and os.path.getsize(self.output_video) > 1024:
+                return None
+        return "OpenCV could not open a writer for avc1 or mp4v"
+
+    def _no_encode(self, reason: str) -> None:
+        """Say what happened, and where the frames still are.
+
+        The PNGs are the recording; the MP4 is a convenience. Naming the
+        directory turns a failed encode into a one-command fix rather than a
+        re-run of the scenario.
+        """
+        import sys
+        sys.stderr.write(
+            "[osc2carla] no video written: %s. The %d frames are in %s; encode "
+            "them elsewhere with:\n  ffmpeg -framerate %d -i %s/frame_%%05d.png "
+            "-c:v libx264 -pix_fmt yuv420p %s\n"
+            % (reason, self._frame_idx, self.frames_dir, self.fps,
+               self.frames_dir, self.output_video))
+        return None

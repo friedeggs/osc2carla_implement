@@ -105,6 +105,28 @@ class PolicyBridgeError(RuntimeError):
     """The external policy could not be loaded or spoken to."""
 
 
+def _carla_python_api() -> Optional[str]:
+    """``$CARLA_ROOT/PythonAPI/carla``, when that is a real directory.
+
+    That tree ships with the CARLA *server* and carries the ``agents`` package
+    -- ``agents.navigation``, ``GlobalRoutePlanner``, ``RoadOption`` -- which the
+    pip ``carla`` wheel does not. Every route-conditioned policy in this family
+    imports something from it, directly or through its own controller, and the
+    two installed ones disagree about whose job it is to find it: SimLingo's
+    adapter puts it on ``sys.path`` itself, TFv6's expects a symlink inside its
+    own checkout. Doing it here means neither has to be right.
+
+    ``CARLA_ROOT`` is upstream's own name for this and is a property of the
+    machine, which is why it is read from the environment rather than declared
+    in a config.
+    """
+    root = (os.environ.get("CARLA_ROOT") or "").strip()
+    if not root:
+        return None
+    api = os.path.join(root, "PythonAPI", "carla")
+    return api if os.path.isdir(os.path.join(api, "agents")) else None
+
+
 def _load_module(path: str):
     """Import a policy repository's ``policy.py`` by path, not by package name.
 
@@ -115,8 +137,9 @@ def _load_module(path: str):
     if not os.path.exists(path):
         raise PolicyBridgeError("policy entry point %r does not exist" % path)
     repository = os.path.dirname(os.path.dirname(os.path.abspath(path)))
-    for candidate in (repository, os.path.dirname(os.path.abspath(path))):
-        if candidate not in sys.path:
+    for candidate in (repository, os.path.dirname(os.path.abspath(path)),
+                      _carla_python_api()):
+        if candidate and candidate not in sys.path:
             sys.path.insert(0, candidate)
     spec = importlib.util.spec_from_file_location("_osc2carla_external_policy", path)
     if spec is None or spec.loader is None:
@@ -336,9 +359,11 @@ class BridgedPolicy(EgoPolicy):
         self._act = None
         self._loaded = False
         self.request: Dict[str, Any] = {}
-        #: The last action the policy returned, verbatim. Read only by
-        #: `metadata()` and the video overlay; nothing in the control path.
+        #: The last action the policy returned, verbatim, and the last
+        #: observation it was handed. Read only by `metadata()` and the video
+        #: overlay; nothing in the control path touches either.
         self.last_action: Optional[Dict[str, Any]] = None
+        self.last_observation_payload: Optional[Dict[str, Any]] = None
 
     # -- loading -----------------------------------------------------------
 
@@ -362,6 +387,7 @@ class BridgedPolicy(EgoPolicy):
         with open(request_path) as fh:
             self.request = json.load(fh)
         self.name = str(self.request.get("name") or "bridged")
+        self._absolutize(os.environ.get("OSC2CARLA_POLICY_ROOT"))
 
         module = _load_module(entry_point)
         self._policy = _construct(module, self.request)
@@ -377,6 +403,53 @@ class BridgedPolicy(EgoPolicy):
         self._loaded = True
         sys.stderr.write("[policy_bridge] %s loaded from %s\n"
                          % (self.name, entry_point))
+
+    #: Request keys whose value is a path when it is one. `checkpoint` is in the
+    #: contract; the rest are the conventional names a policy repository uses
+    #: for a file inside its checkpoint, and are only rewritten when the rewrite
+    #: actually lands on something.
+    PATH_PARAMETERS = ("weights", "checkpoint", "config", "config_path",
+                       "model_path", "weights_path")
+
+    def _absolutize(self, root: Optional[str]) -> None:
+        """Make the request's relative checkpoint paths absolute.
+
+        The harness writes paths relative to its own root -- ``checkpoint:
+        third_party/checkpoints/simlingo/simlingo`` -- because that is where the
+        declaration lives and where an operator reads it. The policy resolves
+        them against the process's working directory, which is the method's, not
+        the harness's, and which this runner deliberately lets an operator move
+        (a vision policy caches a multi-gigabyte backbone under it). Those two
+        facts only agree by accident.
+
+        Rewritten only when the rewrite lands on something that exists, so a
+        genuinely missing checkpoint still fails naming the path the harness
+        asked for rather than a path this file invented.
+        """
+        if not root or not os.path.isdir(root):
+            return
+        rewritten = []
+
+        def resolve(value):
+            if not isinstance(value, str) or not value or os.path.isabs(value):
+                return value
+            candidate = os.path.join(root, value)
+            if not os.path.exists(candidate):
+                return value
+            rewritten.append(value)
+            return os.path.abspath(candidate)
+
+        self.request["checkpoint"] = resolve(self.request.get("checkpoint"))
+        parameters = self.request.get("parameters")
+        if isinstance(parameters, dict):
+            for key in self.PATH_PARAMETERS:
+                if key in parameters:
+                    parameters[key] = resolve(parameters[key])
+        if rewritten:
+            sys.stderr.write(
+                "[policy_bridge] resolved %d request path(s) against the "
+                "harness root %s: %s\n"
+                % (len(rewritten), root, ", ".join(rewritten)))
 
     # -- osc2carla's EgoPolicy contract ------------------------------------
 
@@ -421,7 +494,13 @@ class BridgedPolicy(EgoPolicy):
             reset()
 
     def act(self, obs: Observation) -> Command:
-        action = self._act(_observation_payload(obs))
+        payload = _observation_payload(obs)
+        # Kept without the images: the panel wants the route and the numbers,
+        # and holding a reference to every frame would keep the whole run's
+        # camera data alive for the sake of an overlay.
+        self.last_observation_payload = {k: v for k, v in payload.items()
+                                         if k != "sensor"}
+        action = self._act(payload)
         if action is None:
             raise PolicyBridgeError(
                 "policy %r returned no action for t=%.2fs" % (self.name, obs.t))

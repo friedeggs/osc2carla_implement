@@ -95,6 +95,25 @@ def _running_leaves(node, out=None):
     return out
 
 
+def _vision_band_height(rig, width: int, cap: int = 420) -> int:
+    """Rows to give the vision band so the rig's strip spans the frame width.
+
+    Derived from the DECLARED cameras rather than from a captured panel, because
+    the band's height has to be fixed before the first frame -- every frame in
+    an MP4 is the same size -- and the first frame may be one where the rig
+    delivered nothing.
+    """
+    from .backend.sensors import CameraSpec
+    cameras = [s for s in rig.specs if isinstance(s, CameraSpec)]
+    if not cameras:
+        return 0
+    strip_w = sum(int(c.width) for c in cameras)
+    strip_h = max(int(c.height) for c in cameras)
+    if strip_w <= 0 or strip_h <= 0:
+        return 0
+    return max(120, min(cap, int(round(width * strip_h / float(strip_w)))))
+
+
 def _vision_hook(controller, mode: str):
     """The recorder's per-tick vision payload, or None for no panel.
 
@@ -121,7 +140,13 @@ def _vision_hook(controller, mode: str):
         obs = controller.last_observation
         lines = []
         if obs is not None:
-            route = obs.route_ego()
+            # What the POLICY was told, when the policy plumbing kept a copy of
+            # it. A bridged policy is handed a resampled route, so showing the
+            # controller's own sampling here would put a number on the panel
+            # that nothing in the run ever saw.
+            sent = getattr(controller.policy, "last_observation_payload", None)
+            route = (sent or {}).get("route") if isinstance(sent, dict) \
+                else obs.route_ego()
             far = route[-1] if route else None
             lines.append(
                 "%s  t=%5.2fs  v=%4.1f m/s  decisions=%d"
@@ -403,7 +428,11 @@ def main(argv: Optional[List[str]] = None) -> int:
                             width=args.record_width,
                             height=args.record_height,
                             fps=args.record_fps,
-                            vision=panel)
+                            vision=panel,
+                            vision_height=(
+                                _vision_band_height(controller.rig,
+                                                    args.record_width)
+                                if panel else 0))
         print(f"[osc2carla] recording {rec_binding!r} -> {args.record_video}"
               + (" (with the policy's own camera rig)" if panel else ""),
               file=sys.stderr)
