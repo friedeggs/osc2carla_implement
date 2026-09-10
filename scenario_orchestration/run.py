@@ -702,6 +702,16 @@ def build_policy_plan(policy_request: Dict[str, Any], request_path: str,
 
     class_name = implementation.rsplit(".", 1)[-1].rsplit(":", 1)[-1].lower()
     native = NATIVE_POLICIES.get(class_name) or NATIVE_POLICY_NAMES.get(name)
+    # A request naming a repository that exists on disk is BRIDGED, not
+    # realized natively, even when the name is `idm`. `third_party/idm` is the
+    # shared IDM implementation all three methods load, so a variant added
+    # there reaches every method rather than needing the same law re-expressed
+    # in each runtime's own parameter names. The native path stays for a
+    # request naming no loadable repository, so a sweep of the analytic family
+    # -- and this repository run without the harness -- behaves as before.
+    if native is not None and locate_policy_entry_point(policy_request,
+                                                        request_path):
+        native = None
     if native is not None:
         policy, mapping = native
         translated, ignored = translate_parameters(
