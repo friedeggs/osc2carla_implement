@@ -1,6 +1,6 @@
 #!/bin/bash -l
 #SBATCH --job-name=osc2-benchmark6-videos
-#SBATCH --account=aip-cmaddis
+#SBATCH --account=aip-six
 #SBATCH --gres=gpu:l40s:1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=48G
