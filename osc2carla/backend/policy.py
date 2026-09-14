@@ -54,6 +54,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from . import route as route_plan
+from .actuation import AccelerationTracker, SpawnGear, horizontal_speed
 from .simapi import sim as carla
 
 
@@ -119,16 +120,24 @@ class Observation:
 
 @dataclass
 class Command:
-    """Normalised actuation. throttle/brake in [0,1], steer in [-1,1]."""
+    """Normalised actuation. throttle/brake in [0,1], steer in [-1,1].
+
+    ``accel`` is set by a policy whose decision is an ACCELERATION (IDM). The
+    controller then realises it with :class:`~.actuation.AccelerationTracker`
+    every step and ``throttle``/``brake`` are only its open-loop feedforward,
+    kept for the trace; with ``accel`` unset the pedals are applied as given.
+    """
     throttle: float = 0.0
     brake: float = 0.0
     steer: float = 0.0
+    accel: Optional[float] = None
 
     def clamped(self) -> "Command":
         return Command(
             throttle=min(1.0, max(0.0, self.throttle)),
             brake=min(1.0, max(0.0, self.brake)),
             steer=min(1.0, max(-1.0, self.steer)),
+            accel=self.accel,
         )
 
 
@@ -239,7 +248,7 @@ class IDMPolicy(EgoPolicy):
     def act(self, obs: Observation) -> Command:
         a = self.acceleration(obs.speed, obs.leader)
         self.last_accel = a
-        cmd = Command()
+        cmd = Command(accel=a)
         if a >= 0.0:
             cmd.throttle = a / self.p["a_throttle"]
         else:
@@ -377,6 +386,11 @@ class ExternalEgoController:
         self._command: Optional[Command] = None
         self._last_decision_t: Optional[float] = None
         self._last_observation: Optional[Observation] = None
+        #: realises an acceleration command every step; see Command.accel
+        self._tracker = AccelerationTracker()
+        self._spawn_gear = SpawnGear()
+        self._last_tick_t: Optional[float] = None
+        self._applied: Optional[Tuple[float, float]] = None   # (throttle, brake)
         self._actor = ctx.actor(binding)
         if self._actor is None:
             raise RuntimeError(f"ego policy: no spawned actor for binding {binding!r}")
@@ -495,11 +509,33 @@ class ExternalEgoController:
             self.decisions += 1
         else:
             obs = self.observe(sim_time, sensors=False)
+        dt = (sim_time - self._last_tick_t
+              if self._last_tick_t is not None and sim_time > self._last_tick_t
+              else 0.05)
+        self._last_tick_t = sim_time
         if carla and self._command is not None:
+            cmd = self._command
+            # Over the ground: `obs.speed` also counts vertical motion, and an
+            # ego spawned half a metre up is still settling onto the road when
+            # the first command arrives.
+            speed = horizontal_speed(self._actor, obs.speed)
+            pedals, gear = self._spawn_gear.step(self._actor, speed, dt,
+                                                 accel=cmd.accel, brake=cmd.brake)
+            if pedals is not None:          # the spawn phase drives the car
+                self._tracker.reset(prime=True)
+                throttle, brake = pedals
+            elif cmd.accel is not None:
+                # An acceleration is held as a demand and turned into pedals
+                # against this tick's measured speed. The pedals in `cmd` are
+                # its open-loop map (a/3, -a/5), which in CARLA left the ego
+                # settled 15-25% under its desired speed.
+                throttle, brake = self._tracker.step(cmd.accel, speed, dt)
+            else:
+                throttle, brake = cmd.throttle, cmd.brake
+            self._applied = (throttle, brake)
             self._actor.apply_control(
-                carla.VehicleControl(throttle=self._command.throttle,
-                                     steer=self._command.steer,
-                                     brake=self._command.brake)
+                carla.VehicleControl(throttle=throttle, steer=cmd.steer,
+                                     brake=brake, **gear)
             )
         return obs
 
@@ -540,6 +576,11 @@ class ExternalEgoController:
             "decisions": self.decisions,
             "control_steps": self.ticks,
             "sensor_rig": self.rig.describe() if self.rig is not None else None,
+            "longitudinal": ("acceleration, realised by AccelerationTracker"
+                             if self._command is not None
+                             and self._command.accel is not None
+                             else "the policy's own pedals"),
+            "spawn_gear": self._spawn_gear.plan,
         }
         # Whatever the policy says about itself -- for a bridged policy that is
         # the checkpoint it loaded and, for a VLA, the text it generated. Passed

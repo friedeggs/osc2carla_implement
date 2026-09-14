@@ -136,8 +136,9 @@ CLASS_NAMES = ("Policy", "EgoPolicy", "Agent")
 #: Methods tried on the constructed policy, in order.
 ACT_METHODS = ("act", "step", "run_step", "__call__")
 
-#: Same pedal mapping as osc2carla's built-in IDM, for policies that return an
-#: acceleration rather than pedals.
+#: Open-loop pedals for an acceleration, kept only as the command's feedforward
+#: fields: the acceleration itself rides in `Command.accel`, and the controller
+#: realises it closed-loop (osc2carla/backend/actuation.py).
 ACCEL_TO_THROTTLE = 3.0
 ACCEL_TO_BRAKE = 5.0
 
@@ -357,6 +358,7 @@ def _to_command(action: Any, action_space: str = "control") -> Command:
     steer = _field(action, "steer", "steering", "steer_norm") or 0.0
     throttle = _field(action, "throttle")
     brake = _field(action, "brake")
+    accel = None
     if throttle is None and brake is None:
         accel = _field(action, "acceleration_mps2", "acceleration", "accel",
                        "accel_mps2", "a")
@@ -368,7 +370,7 @@ def _to_command(action: Any, action_space: str = "control") -> Command:
         throttle = accel / ACCEL_TO_THROTTLE if accel >= 0.0 else 0.0
         brake = 0.0 if accel >= 0.0 else -accel / ACCEL_TO_BRAKE
     return Command(throttle=throttle or 0.0, brake=brake or 0.0,
-                   steer=steer).clamped()
+                   steer=steer, accel=accel).clamped()
 
 
 def _summarize_observation(observation: Dict[str, Any]) -> Dict[str, Any]:
