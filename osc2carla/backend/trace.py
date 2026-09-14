@@ -262,6 +262,12 @@ class SceneTracer(object):
                 snap = world.get_snapshot()
             except Exception:                        # pragma: no cover
                 snap = None
+        if snap is not None and not callable(getattr(snap, "find", None)):
+            # The local simulator's snapshot carries a frame and a timestamp
+            # but no actors. Reading actors off it failed silently for every
+            # one of them, so a localsim run wrote a states.jsonl with an empty
+            # cast on every tick.
+            snap = None
         if snap is None and not self._warned_no_snapshot:
             self._warned_no_snapshot = True
             self.errors.append("no world snapshot; fell back to per-actor reads")
