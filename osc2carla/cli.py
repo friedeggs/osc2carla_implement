@@ -532,7 +532,8 @@ def main(argv: Optional[List[str]] = None) -> int:
                      "ego_signal": signal_note})
         if note:
             print("[osc2carla] trace: %s" % note, file=sys.stderr)
-        tracer = SceneTracer(trace_rec, ctx, carla_map, ego_binding=ego_binding)
+        tracer = SceneTracer(trace_rec, ctx, carla_map, ego_binding=ego_binding,
+                             signal_note=signal_note)
         tracer.declare_scene()
 
     ctx.blackboard["go_signal"] = True

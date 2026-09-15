@@ -44,7 +44,7 @@ something true.
 """
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 #: Declared phase -> the ``carla.TrafficLightState`` name to apply.
 STATES = {"green": "Green", "yellow": "Yellow", "red": "Red"}
@@ -89,6 +89,46 @@ def phase_for(declared: str, ego_yaw: Optional[float],
     parallel = (offset <= AXIS_TOLERANCE_DEG
                 or offset >= 180.0 - AXIS_TOLERANCE_DEG)
     return declared if parallel else complement
+
+
+def role_for(ego_yaw: Optional[float], member_yaw: Optional[float]) -> str:
+    """Where one light of the group stands relative to the ego's approach.
+
+    "ego" for an approach heading the ego's way, "opposing" for the one facing
+    it, "crossing" for one across its road, and "unknown" when a heading cannot
+    be read -- a record of what a light showed does not guess what it governs,
+    as `phase_for` must when it sets one.
+    """
+    if ego_yaw is None or member_yaw is None:
+        return "unknown"
+    offset = abs(_normalize_deg(member_yaw - ego_yaw))
+    if offset <= AXIS_TOLERANCE_DEG:
+        return "ego"
+    if offset >= 180.0 - AXIS_TOLERANCE_DEG:
+        return "opposing"
+    return "crossing"
+
+
+def junction_lights(world, carla_map, actor) -> List[Tuple[Any, str]]:
+    """``[(light, role), ...]`` for the junction group governing the ego.
+
+    The same light `apply` sets -- found from the map's signal records ahead of
+    the ego, filtered by the way it faces -- and the rest of its group, each
+    with its `role_for` the ego's approach. Empty when no light faces the ego
+    within `SEARCH_M`, which is every run that meets no signalised junction.
+    """
+    light, ego_yaw = _ego_light(world, carla_map, actor)
+    if light is None:
+        return []
+    try:
+        group = list(light.get_group_traffic_lights())
+    except (AttributeError, RuntimeError):             # pragma: no cover
+        group = [light]
+    if not any(member.id == light.id for member in group):
+        group.append(light)
+    return [(member, "ego" if member.id == light.id
+             else role_for(ego_yaw, _approach_yaw(member)))
+            for member in group]
 
 
 def _approach_yaw(light) -> Optional[float]:

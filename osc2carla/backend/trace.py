@@ -120,12 +120,16 @@ def make_recorder(output_dir, rate_hz=TRACE_RATE_HZ, context=None):
 class SceneTracer(object):
     """Binds the recorder to one `ExecutionContext` and its CARLA actors."""
 
-    def __init__(self, recorder, ctx, carla_map, ego_binding=None):
+    def __init__(self, recorder, ctx, carla_map, ego_binding=None,
+                 signal_note=None):
         self.rec = recorder
         self.ctx = ctx
         self.map = carla_map
         self.ego_binding = ego_binding
+        #: What `signals.apply` did to the ego's junction, if anything.
+        self.signal_note = dict(signal_note or {})
         self.actors = {}                # binding name -> CARLA actor
+        self.lights = []                # [(CARLA light, role)] read each tick
         self.errors = []
         self._warned_no_snapshot = False
 
@@ -141,6 +145,10 @@ class SceneTracer(object):
             self._declare_conflict_point()
         except Exception as exc:                    # pragma: no cover
             self.errors.append("scene: %s" % (exc,))
+        try:
+            self._declare_signals()
+        except Exception as exc:                    # pragma: no cover
+            self.errors.append("signals: %s" % (exc,))
 
     def _bind(self):
         for binding in self.ctx.annotated.scenario.actors:
@@ -243,6 +251,43 @@ class SceneTracer(object):
                               center=(loc.x, loc.y), radius=8.0,
                               source="declared by the scenario")
 
+    def _declare_signals(self):
+        """The ego's junction lights, read back on every tick into the trace.
+
+        `context.ego_signal` records what `signals.apply` set, once, before the
+        run. The metric needs what the lights showed while it ran, so the group
+        governing the ego is found here -- the same light `apply` sets, and its
+        group, each with its role for the ego's approach -- and `tick` reads
+        their states into the recorder's light timeline. A run that meets no
+        signalised junction, or has no CARLA world, declares the source "none".
+        """
+        if not callable(getattr(self.rec, "declare_signals", None)):
+            return
+        from . import signals
+        world = getattr(self.ctx, "world", None)
+        ego = self.actors.get(self.ego_binding) if self.ego_binding else None
+        if (world is not None and self.map is not None and ego is not None
+                and callable(getattr(world, "get_traffic_light", None))):
+            self.lights = signals.junction_lights(world, self.map, ego)
+        note = self.signal_note
+        self.rec.declare_signals(
+            "simulator" if self.lights else "none",
+            frozen=bool(note.get("frozen")), requested=note.get("requested"),
+            roles={str(light.id): role for light, role in self.lights})
+
+    def _record_signals(self, sim_time):
+        phases, by_role = {}, {"ego": [], "opposing": [], "crossing": []}
+        for light, role in self.lights:
+            try:
+                state = light.get_state()
+            except RuntimeError:                     # pragma: no cover
+                continue
+            phases[light.id] = state
+            by_role.get(role, []).append(state)
+        self.rec.signals(sim_time, ego=by_role["ego"] or None,
+                         opposing=by_role["opposing"] or None,
+                         crossing=by_role["crossing"] or None, lights=phases)
+
     # -- per tick ---------------------------------------------------------- #
 
     def tick(self, sim_time):
@@ -280,6 +325,12 @@ class SceneTracer(object):
             if row is not None:
                 states[name] = row
         self.rec.tick(sim_time, states)
+        if callable(getattr(self.rec, "signals", None)):
+            try:
+                self._record_signals(sim_time)
+            except Exception as exc:                 # pragma: no cover
+                if len(self.errors) < 8:
+                    self.errors.append("signals: %s" % (exc,))
 
     @staticmethod
     def _from_snapshot(snap, actor):

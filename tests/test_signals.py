@@ -55,4 +55,82 @@ note = S.apply(None, None, None, "green")
 assert note["applied"] is None and "no CARLA world" in note["note"], note
 print("an absent, unrecognized, or unsettable phase is reported, not raised")
 
+# 8. the trace records each light of the group with its role for the ego's
+#    approach; an unreadable heading is recorded as unknown, not guessed
+assert S.role_for(EGO, EGO) == "ego"
+assert S.role_for(EGO, OPPOSING) == "opposing"
+assert S.role_for(EGO, CROSSING) == "crossing"
+assert S.role_for(EGO, None) == "unknown"
+print("each light of the group is recorded with its role")
+
+
+class _Rot(object):
+    def __init__(self, yaw):
+        self.yaw = yaw
+
+
+class _Tf(object):
+    def __init__(self, yaw):
+        self.rotation = _Rot(yaw)
+
+
+class _Wp(object):
+    def __init__(self, yaw, marks=()):
+        self.transform = _Tf(yaw)
+        self._marks = list(marks)
+
+    def get_landmarks_of_type(self, distance, kind, stop_at_junction):
+        return self._marks
+
+
+class _Mark(object):
+    def __init__(self, light_id, distance):
+        self.id, self.distance = light_id, distance
+
+
+class _Light(object):
+    def __init__(self, light_id, yaw):
+        self.id, self.yaw, self.group = light_id, yaw, []
+
+    def get_stop_waypoints(self):
+        return [_Wp(self.yaw)]
+
+    def get_group_traffic_lights(self):
+        return self.group
+
+
+class _World(object):
+    def __init__(self, lights):
+        self.lights = {l.id: l for l in lights}
+
+    def get_traffic_light(self, mark):
+        return self.lights.get(mark.id)
+
+
+class _Map(object):
+    def __init__(self, wp):
+        self.wp = wp
+
+    def get_waypoint(self, location, project_to_road=True):
+        return self.wp
+
+
+class _Actor(object):
+    def get_location(self):
+        return None
+
+
+# 9. the red_light junction: a light across the road is nearer in the map's
+#    records than the ego's own, and the group is read off the ego's light
+ego_light, opp, cross_a, cross_b = (_Light(16, EGO), _Light(17, OPPOSING),
+                                    _Light(15, CROSSING), _Light(23, CROSSING + 180.0))
+for light in (ego_light, opp, cross_a, cross_b):
+    light.group = [ego_light, opp, cross_a, cross_b]
+world = _World([ego_light, opp, cross_a, cross_b])
+cmap = _Map(_Wp(EGO, marks=[_Mark(15, 20.0), _Mark(16, 31.0)]))
+roles = {light.id: role for light, role in S.junction_lights(world, cmap, _Actor())}
+assert roles == {16: "ego", 17: "opposing", 15: "crossing", 23: "crossing"}, roles
+assert S.junction_lights(_World([]), _Map(_Wp(EGO)), _Actor()) == []
+print("the recorded group is the ego's junction, with each light's role")
+
 print("\nall signal-phase checks passed")
