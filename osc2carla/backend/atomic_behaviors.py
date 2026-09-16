@@ -113,6 +113,79 @@ def _is_driving(wp) -> bool:
     return str(lane_type).split(".")[-1].lower() == "driving"
 
 
+#: IDM constants for `keep_gap`. They are `configs/policy/idm.yaml`'s (IDM-B:
+#: T 1.5 s, s0 2 m, a 1.5, b 2.0), so a background car follows the way the
+#: harness's reference driver does rather than by a law invented here.
+KEEP_GAP_T = 1.5
+KEEP_GAP_S0 = 2.0
+KEEP_GAP_A = 1.5
+KEEP_GAP_B = 2.0
+#: A lead is a vehicle within this lateral offset of the follower's heading
+#: line, this far ahead, travelling within this heading difference.
+KEEP_GAP_LAT_M = 1.75
+KEEP_GAP_RANGE_M = 80.0
+KEEP_GAP_HEADING_DEG = 45.0
+
+
+def _vehicles(ctx):
+    """Every vehicle in the world, read once per tick and shared by all leaves."""
+    stamp = getattr(ctx, "sim_time", None)
+    stamp = stamp() if callable(stamp) else stamp
+    cache = getattr(ctx, "_keep_gap_cache", None)
+    if cache is not None and cache[0] == stamp:
+        return cache[1]
+    world = ctx.world
+    try:
+        vehicles = list(world.get_actors().filter("vehicle.*")) if world else []
+    except Exception:
+        vehicles = []
+    ctx._keep_gap_cache = (stamp, vehicles)
+    return vehicles
+
+
+def _lead(actor, ctx):
+    """`(bumper gap m, lead speed along our heading m/s)` of the nearest
+    same-direction vehicle ahead in our lane, or None."""
+    tf = actor.get_transform()
+    yaw = math.radians(tf.rotation.yaw)
+    fx, fy = math.cos(yaw), math.sin(yaw)
+    my_half = actor.bounding_box.extent.x
+    best = None
+    for other in _vehicles(ctx):
+        if other.id == actor.id:
+            continue
+        ot = other.get_transform()
+        dx = ot.location.x - tf.location.x
+        dy = ot.location.y - tf.location.y
+        ahead = dx * fx + dy * fy
+        lateral = -dx * fy + dy * fx
+        if ahead <= 0.0 or ahead > KEEP_GAP_RANGE_M or abs(lateral) > KEEP_GAP_LAT_M:
+            continue
+        dyaw = abs((ot.rotation.yaw - tf.rotation.yaw + 180.0) % 360.0 - 180.0)
+        if dyaw > KEEP_GAP_HEADING_DEG:
+            continue
+        gap = ahead - my_half - other.bounding_box.extent.x
+        if best is None or gap < best[0]:
+            v = other.get_velocity()
+            best = (gap, v.x * fx + v.y * fy)
+    return best
+
+
+def _idm_speed_cap(v, v_set, lead, horizon=0.5):
+    """The speed IDM would command `horizon` seconds from now, given a lead."""
+    if lead is None:
+        return v_set
+    gap, v_lead = lead
+    if gap <= KEEP_GAP_S0:
+        return 0.0
+    v0 = max(v_set, 0.1)
+    dv = v - v_lead
+    s_star = KEEP_GAP_S0 + max(0.0, v * KEEP_GAP_T
+                               + v * dv / (2.0 * math.sqrt(KEEP_GAP_A * KEEP_GAP_B)))
+    acc = KEEP_GAP_A * (1.0 - (v / v0) ** 4 - (s_star / gap) ** 2)
+    return max(0.0, min(v_set, v + acc * horizon))
+
+
 class WaypointFollowerLite(py_trees.behaviour.Behaviour):
     """PID longitudinal control + pure-pursuit steering along the lane graph.
 
@@ -132,7 +205,7 @@ class WaypointFollowerLite(py_trees.behaviour.Behaviour):
                  name="DriveLite", lookahead=5.0,
                  kp=0.6, ki=0.05, kd=0.1,
                  max_throttle=1.0, max_brake=1.0,
-                 keep_lane=False):
+                 keep_lane=False, keep_gap=False):
         super().__init__(name=name)
         self._actor = actor_handle
         self._v_set = v_setpoint
@@ -141,6 +214,7 @@ class WaypointFollowerLite(py_trees.behaviour.Behaviour):
         self._pid = _SpeedPID(kp=kp, ki=ki, kd=kd,
                               max_throttle=max_throttle, max_brake=max_brake)
         self._keep_lane = keep_lane
+        self._keep_gap = keep_gap
         self._locked_lane = None
         self._left_junction = False
 
@@ -153,6 +227,11 @@ class WaypointFollowerLite(py_trees.behaviour.Behaviour):
         if actor is None or not carla:
             return py_trees.common.Status.RUNNING
         target_v = _wrap_speed(self._v_set, self._ctx)
+        if self._keep_gap:
+            # A speed setpoint alone drives into a stopped lead: every
+            # background car added behind an ego at a red light rear-ended it.
+            target_v = _idm_speed_cap(_speed_of(actor), target_v,
+                                      _lead(actor, self._ctx))
         control = carla.VehicleControl()
         self._pid.apply(control, target_v, _speed_of(actor))
         control.steer = self._compute_steer(actor)
@@ -224,10 +303,11 @@ def _build_drive(actor_handle, args, modifiers, ctx):
     if v_setpoint is None:
         v_setpoint = 0.0
     keep_lane = any(m.name == "keep_lane" for m in modifiers)
-    suffix = "+keep_lane" if keep_lane else ""
+    keep_gap = any(m.name == "keep_gap" for m in modifiers)
+    suffix = ("+keep_lane" if keep_lane else "") + ("+keep_gap" if keep_gap else "")
     name = f"Drive[{actor_handle._binding}{suffix}]"
     return WaypointFollowerLite(actor_handle, v_setpoint, ctx, name=name,
-                                keep_lane=keep_lane)
+                                keep_lane=keep_lane, keep_gap=keep_gap)
 
 
 class ChangeTargetSpeed(py_trees.behaviour.Behaviour):

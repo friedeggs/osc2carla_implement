@@ -252,8 +252,10 @@ def _emit_action_call(action: nodes.ActionCall) -> str:
     if name in ("drive",):
         v = _speed_modifier_repr(mods) or "0.0"
         keep_lane = any(m.name == "keep_lane" for m in mods)
+        keep_gap = any(m.name == "keep_gap" for m in mods)
         return (f"WaypointFollowerLite({actor}, {v}, ctx, "
-                f"name='Drive[{actor}]', keep_lane={keep_lane!r})")
+                f"name='Drive[{actor}]', keep_lane={keep_lane!r}, "
+                f"keep_gap={keep_gap!r})")
     if name in ("change_speed",):
         tgt = _expr_repr(args.named.get("target", nodes.NumLit(0.0)))
         prof = "smooth"
