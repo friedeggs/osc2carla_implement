@@ -6,8 +6,10 @@ import "domain.osc"
 # monitor does not arm, until the ego is actually driving (faster than
 # `ego_moving`). An ego policy that sits still after spawn -- PlanT 2.0 holds
 # at 0 m/s for about 4.5 s here -- otherwise has the whole cut-in performed in
-# front of a parked car, which is not the scenario. For an ego that starts at
-# once the gate opens within about a second. The termination guard is 25 s
+# front of a parked car, which is not the scenario. The gate first waits 1 s:
+# a car is spawned about 0.5 m above the road and `speed` counts its fall,
+# which read as ~3 m/s and opened a bare speed gate at once. For an ego that
+# starts at once the gate opens a second or two in. The termination guard is 25 s
 # rather than 20 s so a late start keeps the same window after the cut-in.
 # =============================================================================
 #
@@ -164,7 +166,19 @@ scenario cut_in:
                 speed(0kph, at: start)
 
             wait @go_signal
-            wait ego.speed > ego_moving
+
+            # Held at a standstill until the ego drives: a parked car on this
+            # grade rolls forward, about 5 m in the 5 s a slow starter waits.
+            one_of:
+                hero.drive() with:
+                    speed(0kph)
+                    keep_lane()
+                wait elapsed(1s)
+            one_of:
+                hero.drive() with:
+                    speed(0kph)
+                    keep_lane()
+                wait ego.speed > ego_moving
 
             one_of:
                 hero.drive() with:
@@ -190,6 +204,7 @@ scenario cut_in:
         # progress relative to the ego rather than on a timer.
         serial:
             wait @go_signal
+            wait elapsed(1s)
             wait ego.speed > ego_moving
             wait rise(hero.position.ahead_of(ego) >= cut_in_lead)
             emit HERO_AHEAD
