@@ -177,6 +177,44 @@ def _lead(actor, ctx):
     return best
 
 
+#: `obey_lights`: how far ahead along the lane a light is looked for.
+OBEY_LIGHTS_RANGE_M = 45.0
+
+
+def _light_stop(actor, ctx):
+    """`(bumper gap to the stop line m, 0.0)` for the nearest red or yellow
+    light governing our lane ahead, or None. The phase is whatever CARLA shows;
+    backend/signals.py sets the scenario's junction to a consistent phase."""
+    world = getattr(ctx, "world", None)
+    if world is None:
+        return None
+    cmap = getattr(ctx, "_obey_lights_map", None)
+    if cmap is None:
+        cmap = ctx._obey_lights_map = world.get_map()
+    loc = actor.get_location()
+    wp = cmap.get_waypoint(loc, project_to_road=True, lane_type=carla.LaneType.Driving)
+    if wp is None:
+        return None
+    yaw = math.radians(actor.get_transform().rotation.yaw)
+    fx, fy = math.cos(yaw), math.sin(yaw)
+    half = actor.bounding_box.extent.x
+    stop_states = (carla.TrafficLightState.Red, carla.TrafficLightState.Yellow)
+    best = None
+    for light in world.get_traffic_lights_from_waypoint(wp, OBEY_LIGHTS_RANGE_M):
+        if light.get_state() not in stop_states:
+            continue
+        for sw in light.get_stop_waypoints():
+            sl = sw.transform.location
+            dx, dy = sl.x - loc.x, sl.y - loc.y
+            ahead = dx * fx + dy * fy
+            if ahead <= 0.0 or abs(-dx * fy + dy * fx) > 0.5 * sw.lane_width:
+                continue
+            gap = ahead - half
+            if best is None or gap < best[0]:
+                best = (gap, 0.0)
+    return best
+
+
 def _idm_speed_cap(v, v_set, lead, horizon=0.5):
     """The speed IDM would command `horizon` seconds from now, given a lead."""
     if lead is None:
@@ -211,7 +249,7 @@ class WaypointFollowerLite(py_trees.behaviour.Behaviour):
                  name="DriveLite", lookahead=5.0,
                  kp=0.6, ki=0.05, kd=0.1,
                  max_throttle=1.0, max_brake=1.0,
-                 keep_lane=False, keep_gap=False):
+                 keep_lane=False, keep_gap=False, obey_lights=False):
         super().__init__(name=name)
         self._actor = actor_handle
         self._v_set = v_setpoint
@@ -221,6 +259,7 @@ class WaypointFollowerLite(py_trees.behaviour.Behaviour):
                               max_throttle=max_throttle, max_brake=max_brake)
         self._keep_lane = keep_lane
         self._keep_gap = keep_gap
+        self._obey_lights = obey_lights
         self._locked_lane = None
         self._left_junction = False
 
@@ -233,11 +272,14 @@ class WaypointFollowerLite(py_trees.behaviour.Behaviour):
         if actor is None or not carla:
             return py_trees.common.Status.RUNNING
         target_v = _wrap_speed(self._v_set, self._ctx)
-        if self._keep_gap:
+        if self._keep_gap or self._obey_lights:
             # A speed setpoint alone drives into a stopped lead: every
             # background car added behind an ego at a red light rear-ended it.
-            target_v = _idm_speed_cap(_speed_of(actor), target_v,
-                                      _lead(actor, self._ctx))
+            lead = _lead(actor, self._ctx) if self._keep_gap else None
+            stop = _light_stop(actor, self._ctx) if self._obey_lights else None
+            if stop is not None and (lead is None or stop[0] < lead[0]):
+                lead = stop
+            target_v = _idm_speed_cap(_speed_of(actor), target_v, lead)
         control = carla.VehicleControl()
         self._pid.apply(control, target_v, _speed_of(actor))
         control.steer = self._compute_steer(actor)
@@ -310,10 +352,13 @@ def _build_drive(actor_handle, args, modifiers, ctx):
         v_setpoint = 0.0
     keep_lane = any(m.name == "keep_lane" for m in modifiers)
     keep_gap = any(m.name == "keep_gap" for m in modifiers)
-    suffix = ("+keep_lane" if keep_lane else "") + ("+keep_gap" if keep_gap else "")
+    obey_lights = any(m.name == "obey_lights" for m in modifiers)
+    suffix = (("+keep_lane" if keep_lane else "") + ("+keep_gap" if keep_gap else "")
+              + ("+obey_lights" if obey_lights else ""))
     name = f"Drive[{actor_handle._binding}{suffix}]"
     return WaypointFollowerLite(actor_handle, v_setpoint, ctx, name=name,
-                                keep_lane=keep_lane, keep_gap=keep_gap)
+                                keep_lane=keep_lane, keep_gap=keep_gap,
+                                obey_lights=obey_lights)
 
 
 class ChangeTargetSpeed(py_trees.behaviour.Behaviour):

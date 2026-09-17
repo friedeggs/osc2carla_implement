@@ -49,4 +49,7 @@ modifier keep_lane
 # Car-following: never close on the vehicle ahead in the same lane faster than
 # IDM allows. Without it drive() holds its speed setpoint into a stopped lead.
 modifier keep_gap
+# Signal compliance: a red or yellow light governing the lane ahead is a stopped
+# lead at its stop line. Without it drive() runs every red it meets.
+modifier obey_lights
 modifier acceleration
