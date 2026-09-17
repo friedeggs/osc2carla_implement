@@ -120,11 +120,13 @@ KEEP_GAP_T = 1.5
 KEEP_GAP_S0 = 2.0
 KEEP_GAP_A = 1.5
 KEEP_GAP_B = 2.0
-#: A lead is a vehicle within this lateral offset of the follower's heading
-#: line, this far ahead, travelling within this heading difference.
-KEEP_GAP_LAT_M = 1.75
+#: A lead is any vehicle, this far ahead at most, whose body overlaps the
+#: follower's forward corridor (the follower's own width plus this margin)
+#: WHATEVER ITS HEADING. A same-direction-only test let a car drive into an ego
+#: that a collision had spun round, and a car crossing a junction in front is
+#: an obstacle just as much as one ahead in the lane.
+KEEP_GAP_MARGIN_M = 0.3
 KEEP_GAP_RANGE_M = 80.0
-KEEP_GAP_HEADING_DEG = 45.0
 
 
 def _vehicles(ctx):
@@ -144,12 +146,12 @@ def _vehicles(ctx):
 
 
 def _lead(actor, ctx):
-    """`(bumper gap m, lead speed along our heading m/s)` of the nearest
-    same-direction vehicle ahead in our lane, or None."""
+    """`(bumper gap m, its speed along our heading m/s)` of the nearest vehicle
+    whose body overlaps our forward corridor, or None."""
     tf = actor.get_transform()
     yaw = math.radians(tf.rotation.yaw)
     fx, fy = math.cos(yaw), math.sin(yaw)
-    my_half = actor.bounding_box.extent.x
+    mine = actor.bounding_box.extent
     best = None
     for other in _vehicles(ctx):
         if other.id == actor.id:
@@ -158,13 +160,17 @@ def _lead(actor, ctx):
         dx = ot.location.x - tf.location.x
         dy = ot.location.y - tf.location.y
         ahead = dx * fx + dy * fy
+        if ahead <= 0.0 or ahead > KEEP_GAP_RANGE_M:
+            continue
+        # the other body's half-extents along and across OUR heading
+        rel = math.radians(ot.rotation.yaw - tf.rotation.yaw)
+        c, s = abs(math.cos(rel)), abs(math.sin(rel))
+        oe = other.bounding_box.extent
+        half_along, half_across = oe.x * c + oe.y * s, oe.x * s + oe.y * c
         lateral = -dx * fy + dy * fx
-        if ahead <= 0.0 or ahead > KEEP_GAP_RANGE_M or abs(lateral) > KEEP_GAP_LAT_M:
+        if abs(lateral) > mine.y + half_across + KEEP_GAP_MARGIN_M:
             continue
-        dyaw = abs((ot.rotation.yaw - tf.rotation.yaw + 180.0) % 360.0 - 180.0)
-        if dyaw > KEEP_GAP_HEADING_DEG:
-            continue
-        gap = ahead - my_half - other.bounding_box.extent.x
+        gap = ahead - mine.x - half_along
         if best is None or gap < best[0]:
             v = other.get_velocity()
             best = (gap, v.x * fx + v.y * fy)
